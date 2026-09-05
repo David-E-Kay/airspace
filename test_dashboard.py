@@ -141,6 +141,27 @@ def test_render_survives_a_broken_collect(monkey=None):
     assert 'BoomError' in page and '<html' in page
 
 
+def test_title_prefers_a_rename_and_falls_back_to_a_full_scan():
+    """The title is what tells two sessions in one project apart, so it must
+    survive being written far outside the tail window."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / 's.jsonl'
+        early = json.dumps({'type': 'custom-title', 'customTitle': 'First name'})
+        filler = json.dumps({'type': 'system', 'pad': 'x' * 500})
+        p.write_text('\n'.join([early] + [filler] * 200), encoding='utf-8')
+
+        entries = d.tail_entries(p, nbytes=2048)
+        assert not any(e.get('type') == 'custom-title' for e in entries), \
+            'fixture is wrong: the title must be outside the tail'
+        assert d.read_title(p, entries) == 'First name'
+
+        later = json.dumps({'type': 'custom-title', 'customTitle': 'Renamed'})
+        p.write_text(p.read_text(encoding='utf-8') + '\n' + later, encoding='utf-8')
+        assert d.read_title(p, d.tail_entries(p, nbytes=2048)) == 'Renamed'
+
+    assert d.read_title(Path(tmp) / 'gone.jsonl', []) == ''
+
+
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_')]
     for t in tests:

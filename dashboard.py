@@ -197,6 +197,33 @@ def read_activity(entries):
             'trail': trail[-6:], 'last_ts': last_ts, 'prompt': prompt}
 
 
+def read_title(path, entries):
+    """The chat's title, so two sessions in one project can be told apart.
+
+    A rename lands at the end of the file, inside the tail already read. The
+    original title is written near the start, so falling back to a scan of the
+    whole file is what makes this work for a long-running session.
+    """
+    for d in reversed(entries):
+        if d.get('type') == 'custom-title' and d.get('customTitle'):
+            return str(d['customTitle'])
+    title = ''
+    try:
+        with open(path, 'rb') as fh:
+            for raw in fh:
+                if b'"custom-title"' not in raw:
+                    continue
+                try:
+                    d = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if d.get('customTitle'):
+                    title = str(d['customTitle'])  # a later rename wins
+    except OSError:
+        pass
+    return title
+
+
 def transcript_path(cwd, session_id, projects=PROJECTS):
     return Path(projects) / slug_for(cwd) / f'{session_id}.jsonl'
 
@@ -264,11 +291,14 @@ def collect():
         if key not in gits:
             gits[key] = git_info(cwd)
         g = gits[key]
-        act = read_activity(tail_entries(transcript_path(cwd, s['sessionId'])))
+        tpath = transcript_path(cwd, s['sessionId'])
+        entries = tail_entries(tpath)
+        act = read_activity(entries)
         rows.append({
             'cwd': cwd,
             'folder': os.path.basename(cwd.rstrip('/\\')) or cwd,
-            'name': s.get('name') or s['sessionId'][:8],
+            'title': (read_title(tpath, entries) or s.get('name')
+                      or s['sessionId'][:8]),
             'pid': s.get('pid'),
             'started': s.get('startedAt'),
             'warnings': [],
@@ -325,7 +355,9 @@ h2 { font-size:13px; font-weight:600; margin:18px 0 7px; color:#cfd4dc; }
 .card.thinking { border-left-color:#8957e5; }
 .card.clash { border-left-color:#e5534b; }
 .top { display:flex; align-items:baseline; gap:7px; flex-wrap:wrap; }
-.folder { font-weight:600; color:#fff; }
+.title { font-weight:600; color:#fff; font-size:13px; margin-bottom:2px;
+         white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.folder { font-size:11px; color:#8b93a1; }
 .branch { font-family:Consolas,monospace; font-size:12px; color:#7ee787;
           background:#1b2b1f; padding:0 7px; border-radius:10px; }
 .dirty { font-size:11px; color:#e3b341; }
@@ -359,13 +391,12 @@ def render(groups, error=''):
         f'<meta http-equiv="refresh" content="{REFRESH_SECONDS}">',
         '<title>Session Board</title>', f'<style>{CSS}</style></head><body>',
         '<h1>Live Claude sessions</h1>',
-        '<div class="bar">',
-        '<a class="btn hot" href="claude://code/needs-input">'
-        'Jump to a session waiting for me</a>',
-        '<a class="btn" href="claude://code/continue?session=last">'
-        'Continue last session</a>',
-        '</div>',
     ]
+    # No click-through to a session. The app registers claude:// and the
+    # routes exist, but the whole code/ family is gated off in this build -
+    # claude://code/new fires and nothing happens. Even if it were on,
+    # code/continue only accepts "last" or a local_ id, and those ids are
+    # not written to disk anywhere.
     if error:
         parts.append(f'<div class="warn-line">{e(error)}</div>')
     if not groups:
@@ -376,6 +407,7 @@ def render(groups, error=''):
         for r in rows:
             cls = 'clash' if r['warnings'] else r['state']
             parts.append(f'<div class="card {cls}">')
+            parts.append(f'<div class="title">{e(r["title"])}</div>')
             parts.append('<div class="top">')
             if not r['is_main']:
                 parts.append(f'<span class="folder">{e(r["folder"])}</span>')
