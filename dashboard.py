@@ -197,6 +197,9 @@ def read_activity(entries):
             'trail': trail[-6:], 'last_ts': last_ts, 'prompt': prompt}
 
 
+_TITLES = {}
+
+
 def read_title(path, entries):
     """The chat's title, so two sessions in one project can be told apart.
 
@@ -204,9 +207,16 @@ def read_title(path, entries):
     original title is written near the start, so falling back to a scan of the
     whole file is what makes this work for a long-running session.
     """
+    key = str(path)
     for d in reversed(entries):
         if d.get('type') == 'custom-title' and d.get('customTitle'):
-            return str(d['customTitle'])
+            _TITLES[key] = str(d['customTitle'])
+            return _TITLES[key]
+    if key in _TITLES:
+        return _TITLES[key]
+    # ponytail: scanning whole transcripts tripled page build to 3.2s, so the
+    # result is kept for the life of the server. A rename is picked up from
+    # the tail above, which is the only way a title changes.
     title = ''
     try:
         with open(path, 'rb') as fh:
@@ -221,6 +231,7 @@ def read_title(path, entries):
                     title = str(d['customTitle'])  # a later rename wins
     except OSError:
         pass
+    _TITLES[key] = title
     return title
 
 

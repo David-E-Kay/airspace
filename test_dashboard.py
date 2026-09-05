@@ -162,6 +162,17 @@ def test_title_prefers_a_rename_and_falls_back_to_a_full_scan():
     assert d.read_title(Path(tmp) / 'gone.jsonl', []) == ''
 
 
+def test_title_scan_result_is_kept():
+    """Scanning whole transcripts is slow, so the answer must be reused."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp) / 's.jsonl'
+        p.write_text(json.dumps(
+            {'type': 'custom-title', 'customTitle': 'Kept'}), encoding='utf-8')
+        assert d.read_title(p, []) == 'Kept'
+        os.remove(p)
+        assert d.read_title(p, []) == 'Kept', 'the scan was repeated'
+
+
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_')]
     for t in tests:
