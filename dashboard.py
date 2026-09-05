@@ -36,47 +36,66 @@ BROWSERS = [
 # liveness
 # --------------------------------------------------------------------------
 
-def alive_pids():
-    """PIDs currently running. Exact, not a recency guess."""
-    if sys.platform == 'win32':
-        out = subprocess.run(
-            ['tasklist', '/fo', 'csv', '/nh'],
-            capture_output=True, text=True, timeout=15,
-        ).stdout
-        pids = set()
-        for line in out.splitlines():
-            parts = line.split('","')
-            if len(parts) > 1:
-                try:
-                    pids.add(int(parts[1].strip('" ')))
-                except ValueError:
-                    pass
-        return pids
-    return None  # POSIX: caller falls back to os.kill
+if sys.platform == 'win32':
+    import ctypes
+    import ctypes.wintypes as wintypes
+
+    _K32 = ctypes.windll.kernel32
+    _K32.OpenProcess.restype = wintypes.HANDLE
+    _K32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
 
 
-def is_alive(pid, pids):
-    if pids is not None:
-        return pid in pids
+def proc_start(pid):
+    """When the process holding this PID started, as a Windows FILETIME, or
+    None if nothing holds it. Same units the registry writes to procStart."""
+    handle = _K32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+    if not handle:
+        return None
     try:
-        os.kill(pid, 0)
-        return True
-    except (OSError, ProcessLookupError):
+        times = [wintypes.FILETIME() for _ in range(4)]
+        if not _K32.GetProcessTimes(handle, *map(ctypes.byref, times)):
+            return None
+        return (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+    finally:
+        _K32.CloseHandle(handle)
+
+
+def is_alive(entry):
+    """Whether this registry entry's session is still running.
+
+    Windows hands a dead process's PID straight to the next one, and a dozen
+    claude.exe processes at a time is normal here, so "some process holds this
+    PID" resurrects finished sessions - carrying their old cwd, which then
+    trips the same-folder warning. The registry records the session's own
+    start time, so comparing the two settles it exactly.
+    """
+    pid = entry.get('pid')
+    if not isinstance(pid, int):
         return False
+    if sys.platform != 'win32':
+        try:
+            os.kill(pid, 0)
+            return True
+        except (OSError, ProcessLookupError):
+            return False
+    started = proc_start(pid)
+    if started is None:
+        return False
+    # ponytail: builds before 2.1 wrote no procStart. Trust the PID there
+    # rather than hide a real session; drop this once none are left.
+    claimed = entry.get('procStart')
+    return claimed is None or str(claimed) == str(started)
 
 
-def live_sessions(registry=REGISTRY, pids=None):
+def live_sessions(registry=REGISTRY, alive=is_alive):
     """Registry entries whose process is still running."""
-    if pids is None:
-        pids = alive_pids()
     out = []
     for f in sorted(Path(registry).glob('*.json')):
         try:
             d = json.loads(f.read_text(encoding='utf-8'))
         except (OSError, json.JSONDecodeError):
             continue
-        pid = d.get('pid')
-        if not isinstance(pid, int) or not is_alive(pid, pids):
+        if not alive(d):
             continue
         if not d.get('sessionId') or not d.get('cwd'):
             continue
@@ -112,6 +131,11 @@ def tail_entries(path, nbytes=TAIL_BYTES):
     return out
 
 
+# Firing one of these ends the turn and puts the ball in the user's court,
+# even though the transcript shows the assistant mid-tool-call.
+HANDBACK_TOOLS = ('AskUserQuestion', 'ExitPlanMode')
+
+
 def summarise_tool(name, inp):
     def base(key):
         return os.path.basename(str(inp.get(key, ''))) or '?'
@@ -127,6 +151,11 @@ def summarise_tool(name, inp):
         return f'subagent: {str(inp.get("description", ""))[:50]}'
     if name == 'Skill':
         return f'skill: {inp.get("skill", "")}'
+    if name == 'AskUserQuestion':
+        qs = inp.get('questions') or [{}]
+        return str(qs[0].get('question') or 'asked you a question')[:110]
+    if name == 'ExitPlanMode':
+        return 'plan ready for your approval'
     if name.startswith('mcp__'):
         return 'tool: ' + name.split('__')[-1]
     return f'tool: {name}'
@@ -140,8 +169,12 @@ def short_tool(name, inp):
         # a leading `cd <dir> &&` is plumbing; the real command follows it
         cmd = re.sub(r'^\s*cd\s+("[^"]*"|\'[^\']*\'|\S+)\s*&&\s*',
                      '', str(inp.get('command', '')))
+        # PowerShell parks a result in a variable before it does anything, so
+        # the first word is `$x` and every command read the same in the trail
+        cmd = re.sub(r'^\s*\$\w+\s*=\s*', '', cmd)
         words = cmd.split()
-        return 'sh ' + (words[0][:14] if words else '')
+        return ('ps ' if name == 'PowerShell' else 'sh ') + \
+            (words[0][:14] if words else '')
     if name.startswith('mcp__'):
         return name.split('__')[-1][:18]
     return name
@@ -159,15 +192,10 @@ def read_activity(entries):
     The shape of the last real turn settles the state. An assistant turn that
     ends on a tool call is mid-work. One that ends on text has handed back to
     you. A user turn carrying a tool result means the tool finished and the
-    model has not answered yet.
+    model has not answered yet. The exception is a tool whose whole job is to
+    hand control back - asking a question, or putting a plan up for approval.
+    That reads as mid-work in the transcript but is really a wait.
     """
-    prompt = ''
-    for d in reversed(entries):
-        if d.get('type') == 'last-prompt' and d.get('lastPrompt'):
-            prompt = re.sub(r'<!--.*?-->', '', str(d['lastPrompt']))
-            prompt = ' '.join(prompt.split())
-            break
-
     last_ts = next((d['timestamp'] for d in reversed(entries) if d.get('timestamp')), None)
     convo = [e for e in entries
              if e.get('type') in ('user', 'assistant') and blocks_of(e)]
@@ -175,18 +203,29 @@ def read_activity(entries):
     trail = [short_tool(b.get('name', ''), b.get('input') or {})
              for e in convo for b in blocks_of(e) if b.get('type') == 'tool_use']
 
+    # The last thing the session actually said. It describes the turn it is
+    # in far better than the prompt that started it does.
+    says = ''
+    for e in reversed(convo):
+        if e['type'] == 'assistant':
+            said = ' '.join(b.get('text', '') for b in blocks_of(e)
+                            if b.get('type') == 'text')
+            if said.strip():
+                says = ' '.join(said.split())
+                break
+
     state, detail, since = 'idle', '', last_ts
     if convo:
         last = convo[-1]
         bs = blocks_of(last)
         since = last.get('timestamp') or last_ts
         if last['type'] == 'assistant' and bs[-1].get('type') == 'tool_use':
-            state = 'working'
-            detail = summarise_tool(bs[-1].get('name', ''), bs[-1].get('input') or {})
+            name = bs[-1].get('name', '')
+            state = 'waiting' if name in HANDBACK_TOOLS else 'working'
+            detail = summarise_tool(name, bs[-1].get('input') or {})
         elif last['type'] == 'assistant':
             state = 'waiting'
-            said = ' '.join(b.get('text', '') for b in bs if b.get('type') == 'text')
-            detail = ' '.join(said.split())[:100]
+            detail, says = says[:100], ''  # one line, not the same line twice
         else:
             state = 'thinking'
             detail = ('tool finished, composing a reply'
@@ -194,7 +233,7 @@ def read_activity(entries):
                       else 'instruction received')
 
     return {'state': state, 'detail': detail, 'since': since,
-            'trail': trail[-6:], 'last_ts': last_ts, 'prompt': prompt}
+            'trail': trail[-6:], 'last_ts': last_ts, 'says': says}
 
 
 _TITLES = {}
@@ -258,8 +297,13 @@ def git_info(cwd):
     """Branch, uncommitted count, and the key that groups worktrees together."""
     common = git(cwd, 'rev-parse', '--path-format=absolute', '--git-common-dir')
     if not common:
-        return {'repo': '', 'label': 'Not a git repository',
-                'branch': '', 'dirty': 0, 'is_main': False}
+        # No repository to group under, so the folder is its own group and
+        # its own heading. One shared "Not a git repository" heading implied
+        # those sessions were related; the missing branch chip already says
+        # there is no git here.
+        return {'repo': os.path.normcase(os.path.abspath(cwd)),
+                'label': os.path.basename(os.path.abspath(cwd)) or cwd,
+                'branch': '', 'dirty': 0, 'is_main': True}
     root = os.path.dirname(common.rstrip('/\\'))
     status = git(cwd, 'status', '--porcelain') or ''
     return {
@@ -387,8 +431,8 @@ h2 { font-size:13px; font-weight:600; margin:18px 0 7px; color:#cfd4dc; }
 .trail { margin-top:5px; font-family:Consolas,monospace; font-size:11px;
          color:#6e7681; white-space:nowrap; overflow:hidden;
          text-overflow:ellipsis; }
-.prompt { margin-top:4px; font-size:11px; color:#7d8590; white-space:nowrap;
-          overflow:hidden; text-overflow:ellipsis; }
+.says { margin-top:4px; font-size:11px; color:#7d8590; white-space:nowrap;
+        overflow:hidden; text-overflow:ellipsis; }
 .warn-line { margin-top:5px; font-size:11px; color:#ff7b72; }
 .empty { color:#8b93a1; padding:20px 0; }
 footer { margin-top:20px; font-size:10px; color:#5b626d; }
@@ -438,8 +482,8 @@ def render(groups, error=''):
             if r['trail']:
                 parts.append('<div class="trail">'
                              + e(' → '.join(r['trail'])) + '</div>')
-            if r['prompt']:
-                parts.append(f'<div class="prompt">{e(r["prompt"][:110])}</div>')
+            if r['says']:
+                parts.append(f'<div class="says">{e(r["says"][:160])}</div>')
             for w in r['warnings']:
                 parts.append(f'<div class="warn-line">! {e(w)}</div>')
             parts.append('</div>')

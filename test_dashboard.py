@@ -5,6 +5,7 @@ Run: python test_dashboard.py
 """
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 
@@ -24,9 +25,8 @@ def test_slug_matches_claude_layout():
     assert real.is_dir(), f'slug rule drifted: {real} not found'
 
 
-def test_tail_reads_last_action_and_prompt():
+def test_tail_reads_last_action_and_what_it_said():
     entries = [
-        {'type': 'last-prompt', 'lastPrompt': 'fix the   timer bug'},
         {'type': 'assistant', 'timestamp': '2026-09-05T10:00:00.000Z',
          'message': {'content': [{'type': 'text', 'text': 'looking now'}]}},
         {'type': 'assistant', 'timestamp': '2026-09-05T10:01:00.000Z',
@@ -42,7 +42,7 @@ def test_tail_reads_last_action_and_prompt():
     assert got['state'] == 'working', got['state']
     assert got['detail'] == 'editing timer.py', got['detail']
     assert got['trail'] == ['Edit timer.py'], got['trail']
-    assert got['prompt'] == 'fix the timer bug', got['prompt']
+    assert got['says'] == 'looking now', got['says']
     assert got['last_ts'] == '2026-09-05T10:01:00.000Z', got['last_ts']
 
 
@@ -111,7 +111,8 @@ def test_live_sessions_drops_dead_processes():
             {'pid': 222, 'sessionId': 'bbb', 'cwd': r'C:\other'}), encoding='utf-8')
         (reg / 'c.json').write_text('not json at all', encoding='utf-8')
 
-        alive = d.live_sessions(registry=reg, pids={111})
+        alive = d.live_sessions(registry=reg,
+                                alive=lambda e: e.get('pid') == 111)
 
     assert [s['sessionId'] for s in alive] == ['aaa'], alive
 
@@ -171,6 +172,73 @@ def test_title_scan_result_is_kept():
         assert d.read_title(p, []) == 'Kept'
         os.remove(p)
         assert d.read_title(p, []) == 'Kept', 'the scan was repeated'
+
+
+
+
+def test_liveness_rejects_a_recycled_pid():
+    """Windows reuses a dead process's PID, so a stale registry entry can point
+    at a live stranger and resurrect a finished session."""
+    if sys.platform != 'win32':
+        return
+    me = os.getpid()
+    real = d.proc_start(me)
+    assert real is not None, 'could not read this process own start time'
+
+    assert d.is_alive({'pid': me, 'procStart': str(real)}), 'live session hidden'
+    assert not d.is_alive({'pid': me, 'procStart': '1'}), 'ghost session shown'
+    assert d.is_alive({'pid': me}), 'pre-2.1 entry hidden'
+    assert not d.is_alive({'pid': 999999, 'procStart': str(real)})
+    assert not d.is_alive({'pid': None})
+
+
+def test_asking_a_question_counts_as_waiting():
+    """AskUserQuestion is the last thing in the transcript while the session
+    sits idle waiting for an answer, so mid-tool-call is not mid-work."""
+    def turn(name, inp):
+        return [{'type': 'assistant', 'timestamp': '2026-09-05T10:00:00Z',
+                 'message': {'content': [
+                     {'type': 'text', 'text': 'Classifying this as   architectural.'},
+                     {'type': 'tool_use', 'name': name, 'input': inp}]}}]
+
+    got = d.read_activity(turn('AskUserQuestion',
+                               {'questions': [{'question': 'Which scope?'}]}))
+    assert got['state'] == 'waiting', got['state']
+    assert got['detail'] == 'Which scope?', got['detail']
+    assert got['says'] == 'Classifying this as architectural.', got['says']
+
+    got = d.read_activity(turn('ExitPlanMode', {'plan': 'do the thing'}))
+    assert got['state'] == 'waiting', got['state']
+
+    # known-positive: an ordinary tool in the same position is still work
+    got = d.read_activity(turn('Read', {'file_path': 'a.py'}))
+    assert got['state'] == 'working', got['state']
+
+
+def test_powershell_trail_shows_the_command_not_the_variable():
+    """PowerShell parks output in a variable first, so taking the first word
+    made every command render identically."""
+    assert d.short_tool('PowerShell', {'command': '$s = Get-ChildItem C:/x'})         == 'ps Get-ChildItem'
+    assert d.short_tool('PowerShell', {'command': 'Get-Process claude'})         == 'ps Get-Process'
+    # known-positive: bash is untouched, and still loses its leading cd
+    assert d.short_tool('Bash', {'command': 'cd /c/r && git status'}) == 'sh git'
+
+
+def test_folders_outside_a_repo_group_by_themselves():
+    with tempfile.TemporaryDirectory() as tmp:
+        loose = Path(tmp) / 'Scratch Notes'
+        loose.mkdir()
+        info = d.git_info(loose)
+
+    assert info['label'] == 'Scratch Notes', info
+    assert info['branch'] == '' and info['dirty'] == 0, info
+    assert info['repo'] == os.path.normcase(str(loose)), info
+
+    # known-positive: a real repo still reports its branch and groups by
+    # the shared git directory, not by cwd
+    here = d.git_info(Path(__file__).parent)
+    assert here['branch'], here
+    assert here['repo'].endswith(os.path.normcase(os.path.join('.git', ''))[:-1])         or '.git' in here['repo'], here
 
 
 if __name__ == '__main__':
