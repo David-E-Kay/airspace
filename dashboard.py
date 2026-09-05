@@ -132,33 +132,69 @@ def summarise_tool(name, inp):
     return f'tool: {name}'
 
 
-def read_activity(entries):
-    """Last action, last timestamp and latest user prompt from tail entries."""
-    action, last_ts, prompt = '', None, ''
+def short_tool(name, inp):
+    """Compact label for the tool trail."""
+    if name in ('Edit', 'Write', 'NotebookEdit', 'Read'):
+        return f'{name} {os.path.basename(str(inp.get("file_path", "")))}'[:26]
+    if name in ('Bash', 'PowerShell'):
+        # a leading `cd <dir> &&` is plumbing; the real command follows it
+        cmd = re.sub(r'^\s*cd\s+("[^"]*"|\'[^\']*\'|\S+)\s*&&\s*',
+                     '', str(inp.get('command', '')))
+        words = cmd.split()
+        return 'sh ' + (words[0][:14] if words else '')
+    if name.startswith('mcp__'):
+        return name.split('__')[-1][:18]
+    return name
 
+
+def blocks_of(entry):
+    content = (entry.get('message') or {}).get('content')
+    return content if isinstance(content, list) else []
+
+
+def read_activity(entries):
+    """Whether the session is working, thinking or waiting on you — plus the
+    trail of tools it has been hitting.
+
+    The shape of the last real turn settles the state. An assistant turn that
+    ends on a tool call is mid-work. One that ends on text has handed back to
+    you. A user turn carrying a tool result means the tool finished and the
+    model has not answered yet.
+    """
+    prompt = ''
     for d in reversed(entries):
         if d.get('type') == 'last-prompt' and d.get('lastPrompt'):
-            prompt = ' '.join(str(d['lastPrompt']).split())
+            prompt = re.sub(r'<!--.*?-->', '', str(d['lastPrompt']))
+            prompt = ' '.join(prompt.split())
             break
 
-    for d in reversed(entries):
-        ts = d.get('timestamp')
-        if ts and last_ts is None:
-            last_ts = ts
-        if action or d.get('type') != 'assistant':
-            continue
-        content = (d.get('message') or {}).get('content')
-        if not isinstance(content, list):
-            continue
-        for block in reversed(content):
-            if block.get('type') == 'tool_use':
-                action = summarise_tool(block.get('name', ''), block.get('input') or {})
-                break
-            if block.get('type') == 'text' and block.get('text', '').strip():
-                action = 'saying: ' + ' '.join(block['text'].split())[:80]
-                break
+    last_ts = next((d['timestamp'] for d in reversed(entries) if d.get('timestamp')), None)
+    convo = [e for e in entries
+             if e.get('type') in ('user', 'assistant') and blocks_of(e)]
 
-    return {'action': action, 'last_ts': last_ts, 'prompt': prompt}
+    trail = [short_tool(b.get('name', ''), b.get('input') or {})
+             for e in convo for b in blocks_of(e) if b.get('type') == 'tool_use']
+
+    state, detail, since = 'idle', '', last_ts
+    if convo:
+        last = convo[-1]
+        bs = blocks_of(last)
+        since = last.get('timestamp') or last_ts
+        if last['type'] == 'assistant' and bs[-1].get('type') == 'tool_use':
+            state = 'working'
+            detail = summarise_tool(bs[-1].get('name', ''), bs[-1].get('input') or {})
+        elif last['type'] == 'assistant':
+            state = 'waiting'
+            said = ' '.join(b.get('text', '') for b in bs if b.get('type') == 'text')
+            detail = ' '.join(said.split())[:100]
+        else:
+            state = 'thinking'
+            detail = ('tool finished, composing a reply'
+                      if any(b.get('type') == 'tool_result' for b in bs)
+                      else 'instruction received')
+
+    return {'state': state, 'detail': detail, 'since': since,
+            'trail': trail[-6:], 'last_ts': last_ts, 'prompt': prompt}
 
 
 def transcript_path(cwd, session_id, projects=PROJECTS):
@@ -271,30 +307,48 @@ def ago(ts):
 
 CSS = """
 * { box-sizing: border-box; }
-body { margin:0; padding:18px; background:#14161a; color:#e6e6e6;
+body { margin:0; padding:16px 18px 26px; background:#14161a; color:#e6e6e6;
        font:13px/1.5 "Segoe UI",system-ui,sans-serif; }
-h1 { font-size:13px; font-weight:600; color:#8b93a1; letter-spacing:.08em;
-     text-transform:uppercase; margin:0 0 14px; }
-h2 { font-size:14px; font-weight:600; margin:20px 0 8px; color:#cfd4dc; }
-.card { background:#1c1f25; border:1px solid #282c34; border-left:3px solid #3d8bfd;
-        border-radius:6px; padding:10px 12px; margin-bottom:8px; }
-.card.warn { border-left-color:#e5534b; }
-.top { display:flex; align-items:baseline; gap:8px; flex-wrap:wrap; }
+h1 { font-size:12px; font-weight:600; color:#8b93a1; letter-spacing:.08em;
+     text-transform:uppercase; margin:0 0 10px; }
+h2 { font-size:13px; font-weight:600; margin:18px 0 7px; color:#cfd4dc; }
+.bar { display:flex; gap:8px; margin-bottom:14px; flex-wrap:wrap; }
+.btn { display:inline-block; padding:5px 11px; border-radius:5px; font-size:12px;
+       text-decoration:none; background:#22262e; border:1px solid #333944;
+       color:#c9d1d9; }
+.btn:hover { background:#2c313a; border-color:#4a5260; }
+.btn.hot { background:#3a2e15; border-color:#7a5c1e; color:#f0c674; }
+.card { background:#1c1f25; border:1px solid #282c34; border-left:3px solid #3d444d;
+        border-radius:6px; padding:9px 11px; margin-bottom:7px; }
+.card.working { border-left-color:#3d8bfd; }
+.card.waiting { border-left-color:#e3b341; }
+.card.thinking { border-left-color:#8957e5; }
+.card.clash { border-left-color:#e5534b; }
+.top { display:flex; align-items:baseline; gap:7px; flex-wrap:wrap; }
 .folder { font-weight:600; color:#fff; }
-.main-tag { font-size:10px; color:#8b93a1; text-transform:uppercase;
-            letter-spacing:.06em; }
 .branch { font-family:Consolas,monospace; font-size:12px; color:#7ee787;
-          background:#1b2b1f; padding:1px 7px; border-radius:10px; }
+          background:#1b2b1f; padding:0 7px; border-radius:10px; }
 .dirty { font-size:11px; color:#e3b341; }
 .when { margin-left:auto; font-size:11px; color:#8b93a1; }
-.action { margin-top:5px; font-family:Consolas,monospace; font-size:12px;
+.state { margin-top:6px; font-size:11px; font-weight:700; letter-spacing:.06em;
+         text-transform:uppercase; }
+.state.working { color:#79b8ff; }
+.state.waiting { color:#f0c674; }
+.state.thinking { color:#c39bff; }
+.state.idle { color:#8b93a1; }
+.state .dur { font-weight:400; letter-spacing:0; text-transform:none;
+              color:#8b93a1; }
+.detail { margin-top:2px; font-family:Consolas,monospace; font-size:12px;
           color:#c9d1d9; white-space:nowrap; overflow:hidden;
           text-overflow:ellipsis; }
-.prompt { margin-top:3px; font-size:11px; color:#7d8590; white-space:nowrap;
+.trail { margin-top:5px; font-family:Consolas,monospace; font-size:11px;
+         color:#6e7681; white-space:nowrap; overflow:hidden;
+         text-overflow:ellipsis; }
+.prompt { margin-top:4px; font-size:11px; color:#7d8590; white-space:nowrap;
           overflow:hidden; text-overflow:ellipsis; }
 .warn-line { margin-top:5px; font-size:11px; color:#ff7b72; }
 .empty { color:#8b93a1; padding:20px 0; }
-footer { margin-top:22px; font-size:10px; color:#5b626d; }
+footer { margin-top:20px; font-size:10px; color:#5b626d; }
 """
 
 
@@ -305,6 +359,12 @@ def render(groups, error=''):
         f'<meta http-equiv="refresh" content="{REFRESH_SECONDS}">',
         '<title>Session Board</title>', f'<style>{CSS}</style></head><body>',
         '<h1>Live Claude sessions</h1>',
+        '<div class="bar">',
+        '<a class="btn hot" href="claude://code/needs-input">'
+        'Jump to a session waiting for me</a>',
+        '<a class="btn" href="claude://code/continue?session=last">'
+        'Continue last session</a>',
+        '</div>',
     ]
     if error:
         parts.append(f'<div class="warn-line">{e(error)}</div>')
@@ -314,19 +374,27 @@ def render(groups, error=''):
     for label, rows in groups:
         parts.append(f'<h2>{e(label)}</h2>')
         for r in rows:
-            parts.append(f'<div class="card{" warn" if r["warnings"] else ""}">')
+            cls = 'clash' if r['warnings'] else r['state']
+            parts.append(f'<div class="card {cls}">')
             parts.append('<div class="top">')
-            parts.append(f'<span class="folder">{e(r["folder"])}</span>')
-            if r['is_main']:
-                parts.append('<span class="main-tag">main</span>')
+            if not r['is_main']:
+                parts.append(f'<span class="folder">{e(r["folder"])}</span>')
             if r['branch']:
                 parts.append(f'<span class="branch">{e(r["branch"])}</span>')
             if r['dirty']:
                 parts.append(f'<span class="dirty">{r["dirty"]} uncommitted</span>')
             parts.append(f'<span class="when">{e(ago(r["last_ts"]))}</span>')
             parts.append('</div>')
-            if r['action']:
-                parts.append(f'<div class="action">{e(r["action"])}</div>')
+
+            words = {'working': 'working', 'waiting': 'waiting for you',
+                     'thinking': 'thinking', 'idle': 'no recent activity'}
+            parts.append(f'<div class="state {r["state"]}">{words[r["state"]]}'
+                         f'<span class="dur"> &middot; {e(ago(r["since"]))}</span></div>')
+            if r['detail']:
+                parts.append(f'<div class="detail">{e(r["detail"])}</div>')
+            if r['trail']:
+                parts.append('<div class="trail">'
+                             + e(' → '.join(r['trail'])) + '</div>')
             if r['prompt']:
                 parts.append(f'<div class="prompt">{e(r["prompt"][:110])}</div>')
             for w in r['warnings']:
