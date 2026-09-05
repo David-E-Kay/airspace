@@ -487,7 +487,10 @@ def open_window(url):
 
 
 def main():
-    url = f'http://localhost:{PORT}/'
+    # 127.0.0.1, not localhost: the server is IPv4-only, and Windows resolves
+    # localhost to IPv6 first, costing ~1.9s per page load waiting for that
+    # to fail. Measured 3.2s via localhost against 1.3s via 127.0.0.1.
+    url = f'http://127.0.0.1:{PORT}/'
     server = ThreadingHTTPServer(('127.0.0.1', PORT), Handler)
     print(f'Session board on {url}   (Ctrl+C to stop)')
     if '--no-browser' not in sys.argv:
