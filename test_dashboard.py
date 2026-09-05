@@ -81,8 +81,13 @@ def test_trail_ignores_the_leading_directory_change():
     """Almost every command starts by changing folder; a trail of 'cd' is
     useless, so the real command has to survive."""
     assert d.short_tool('Bash', {'command': 'cd "C:/a b/c" && pytest -q'}) == 'sh pytest'
-    assert d.short_tool('Bash', {'command': 'cd /c/repo && git status'}) == 'sh git'
+    assert d.short_tool('Bash', {'command': 'cd /c/repo && git status'})         == 'sh git status'
     assert d.short_tool('Bash', {'command': 'grep -r foo .'}) == 'sh grep'
+    # a command often opens with a folder change AND a variable, and both
+    # have to go or the trail reads as the variable name
+    assert d.short_tool('Bash', {
+        'command': 'cd "C:/x" && SP="C:/tmp/scratch" && cp a.py "$SP/a.py"',
+    }) == 'sh cp'
     assert d.short_tool('Bash', {'command': ''}) == 'sh '
 
 
@@ -219,9 +224,25 @@ def test_powershell_trail_shows_the_command_not_the_variable():
     """PowerShell parks output in a variable first, so taking the first word
     made every command render identically."""
     assert d.short_tool('PowerShell', {'command': '$s = Get-ChildItem C:/x'})         == 'ps Get-ChildItem'
-    assert d.short_tool('PowerShell', {'command': 'Get-Process claude'})         == 'ps Get-Process'
+    assert d.short_tool('PowerShell', {'command': 'Get-Process claude'})         == 'ps Get-Process claude'
     # known-positive: bash is untouched, and still loses its leading cd
-    assert d.short_tool('Bash', {'command': 'cd /c/r && git status'}) == 'sh git'
+    assert d.short_tool('Bash', {'command': 'cd /c/r && git status'}) == 'sh git status'
+
+
+def test_trail_keeps_the_subcommand_but_not_the_arguments():
+    """Four `sh git` in a row told the viewer nothing; fetch, commit and
+    branch are different acts and have to be distinguishable."""
+    def sh(cmd):
+        return d.short_tool('Bash', {'command': 'cd /c/repo && ' + cmd})
+
+    assert sh('git fetch origin') == 'sh git fetch'
+    assert sh('git commit -q -F -') == 'sh git commit'
+    assert sh('npm run test:unit') == 'sh npm run'
+    # a flag, a path or a filename is noise, not a subcommand
+    assert sh('pytest -q') == 'sh pytest'
+    assert sh('cat > /c/tmp/f') == 'sh cat'
+    assert sh('python test_dashboard.py') == 'sh python'
+    assert d.short_tool('PowerShell', {'command': '$s = Get-ChildItem C:/x'})         == 'ps Get-ChildItem'
 
 
 def test_folders_outside_a_repo_group_by_themselves():

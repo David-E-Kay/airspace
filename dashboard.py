@@ -166,15 +166,26 @@ def short_tool(name, inp):
     if name in ('Edit', 'Write', 'NotebookEdit', 'Read'):
         return f'{name} {os.path.basename(str(inp.get("file_path", "")))}'[:26]
     if name in ('Bash', 'PowerShell'):
-        # a leading `cd <dir> &&` is plumbing; the real command follows it
-        cmd = re.sub(r'^\s*cd\s+("[^"]*"|\'[^\']*\'|\S+)\s*&&\s*',
-                     '', str(inp.get('command', '')))
+        # `cd <dir> &&` and `VAR=x &&` are plumbing, and a command often
+        # opens with both; the real command is whatever survives them
+        cmd = str(inp.get('command', ''))
+        while True:
+            stripped = re.sub(
+                r'^\s*(?:cd\s+|\w+=)("[^"]*"|\'[^\']*\'|\S+)\s*&&\s*', '', cmd)
+            if stripped == cmd:
+                break
+            cmd = stripped
         # PowerShell parks a result in a variable before it does anything, so
         # the first word is `$x` and every command read the same in the trail
         cmd = re.sub(r'^\s*\$\w+\s*=\s*', '', cmd)
-        words = cmd.split()
+        # `git` alone names no action - three `sh git` in a row said
+        # nothing. A bare second word is the subcommand (`git status`);
+        # a flag, path or filename is noise and gets dropped.
+        words = cmd.split()[:2]
+        if len(words) > 1 and not re.fullmatch(r'[A-Za-z][\w-]*', words[1]):
+            words = words[:1]
         return ('ps ' if name == 'PowerShell' else 'sh ') + \
-            (words[0][:14] if words else '')
+            ' '.join(words)[:22]
     if name.startswith('mcp__'):
         return name.split('__')[-1][:18]
     return name
