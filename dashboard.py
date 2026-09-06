@@ -22,9 +22,17 @@ from pathlib import Path
 CLAUDE = Path.home() / '.claude'
 REGISTRY = CLAUDE / 'sessions'
 PROJECTS = CLAUDE / 'projects'
+CODEX = Path.home() / '.codex'
 TAIL_BYTES = 64 * 1024
+# A whole Codex thread is smaller than one Claude transcript, and the turn
+# markers that settle its state sit at the start of the turn, which a 64K
+# window can fall behind.
+CODEX_TAIL_BYTES = 256 * 1024
 PORT = 8765
 REFRESH_SECONDS = 10
+# How long a card keeps glowing after its state changed. Two refreshes, so a
+# change cannot slip past between glances.
+PULSE_SECONDS = 25
 
 # Launched from board.cmd there is no console, so Windows hands every console
 # program we start a brand new window of its own. git runs several times a
@@ -45,9 +53,14 @@ if sys.platform == 'win32':
     import ctypes
     import ctypes.wintypes as wintypes
 
-    _K32 = ctypes.windll.kernel32
+    _K32 = ctypes.WinDLL('kernel32', use_last_error=True)
     _K32.OpenProcess.restype = wintypes.HANDLE
     _K32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    _K32.CreateFileW.restype = wintypes.HANDLE
+    _K32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    _INVALID_HANDLE = ctypes.c_void_p(-1).value
 
 
 def proc_start(pid):
@@ -196,21 +209,58 @@ def short_tool(name, inp):
     return name
 
 
+def strip_md(s):
+    """Markdown read as prose: link text without the target, no punctuation
+    scaffolding."""
+    s = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'\1', str(s))
+    s = re.sub(r'[`*_#>]+', '', s)
+    return ' '.join(s.split())
+
+
+def headline(text, limit=120):
+    """One readable line out of a block of markdown prose.
+
+    The card used to show the first `limit` characters, which cut mid-word
+    and often caught nothing but throat-clearing. Take the opening line -
+    a heading or bold lead is the session's own summary of what follows -
+    then whole sentences, and never split a word.
+    """
+    lines = [l for l in str(text).splitlines() if l.strip()]
+    if not lines:
+        return ''
+    t = strip_md(lines[0])
+    if len(t) <= limit:
+        return t
+    cut = t[:limit]
+    stop = max(cut.rfind('. '), cut.rfind('? '), cut.rfind('! '))
+    if stop > limit // 3:
+        return cut[:stop + 1]
+    return cut[:cut.rfind(' ')] + '…' if ' ' in cut else cut
+
+
 def blocks_of(entry):
     content = (entry.get('message') or {}).get('content')
     return content if isinstance(content, list) else []
 
 
 def read_activity(entries):
-    """Whether the session is working, thinking or waiting on you — plus the
-    trail of tools it has been hitting.
+    """What the session is doing, plus the trail of tools it has been hitting.
 
     The shape of the last real turn settles the state. An assistant turn that
-    ends on a tool call is mid-work. One that ends on text has handed back to
-    you. A user turn carrying a tool result means the tool finished and the
-    model has not answered yet. The exception is a tool whose whole job is to
-    hand control back - asking a question, or putting a plan up for approval.
-    That reads as mid-work in the transcript but is really a wait.
+    ends on a tool call is mid-work. One that ends on text has finished its
+    turn - `done`. A user turn carrying a tool result means the tool finished
+    and the model has not answered yet. The exception is a tool whose whole
+    job is to hand control back - asking a question, or putting a plan up for
+    approval - which is `asking`.
+
+    `asking` and `done` used to share one label, "waiting for you", which
+    made a session that had simply stopped talking look as urgent as one
+    holding a question. Only `asking` is genuinely blocked on you.
+
+    ponytail: a session parked on a permission prompt is indistinguishable
+    from one mid-tool-call - the transcript records the call either way - so
+    it reads as `working`. Fixing that needs a hook writing into the session,
+    which this board deliberately does not do.
     """
     last_ts = next((d['timestamp'] for d in reversed(entries) if d.get('timestamp')), None)
     convo = [e for e in entries
@@ -224,10 +274,10 @@ def read_activity(entries):
     says = ''
     for e in reversed(convo):
         if e['type'] == 'assistant':
-            said = ' '.join(b.get('text', '') for b in blocks_of(e)
-                            if b.get('type') == 'text')
+            said = '\n'.join(b.get('text', '') for b in blocks_of(e)
+                             if b.get('type') == 'text')
             if said.strip():
-                says = ' '.join(said.split())
+                says = said
                 break
 
     state, detail, since = 'idle', '', last_ts
@@ -237,11 +287,12 @@ def read_activity(entries):
         since = last.get('timestamp') or last_ts
         if last['type'] == 'assistant' and bs[-1].get('type') == 'tool_use':
             name = bs[-1].get('name', '')
-            state = 'waiting' if name in HANDBACK_TOOLS else 'working'
+            state = 'asking' if name in HANDBACK_TOOLS else 'working'
             detail = summarise_tool(name, bs[-1].get('input') or {})
         elif last['type'] == 'assistant':
-            state = 'waiting'
-            detail, says = says[:100], ''  # one line, not the same line twice
+            state = 'done'
+            # one line, not the same line twice
+            detail, says = headline(says, 110), ''
         else:
             state = 'thinking'
             detail = ('tool finished, composing a reply'
@@ -249,7 +300,8 @@ def read_activity(entries):
                       else 'instruction received')
 
     return {'state': state, 'detail': detail, 'since': since,
-            'trail': trail[-6:], 'last_ts': last_ts, 'says': says}
+            'trail': trail[-6:], 'last_ts': last_ts,
+            'says': headline(says, 160)}
 
 
 _TITLES = {}
@@ -292,6 +344,176 @@ def read_title(path, entries):
 
 def transcript_path(cwd, session_id, projects=PROJECTS):
     return Path(projects) / slug_for(cwd) / f'{session_id}.jsonl'
+
+
+# --------------------------------------------------------------------------
+# codex
+# --------------------------------------------------------------------------
+#
+# Codex logs a session the same way Claude does - one JSON line per event -
+# but records more, so less has to be inferred. Every turn is bracketed by
+# task_started and task_complete, the branch and repository are written down
+# at session start, and each open thread holds a lock file open for as long
+# as it lives. That last one is proof of life, not a guess: Windows drops the
+# handle when the process dies, so a crashed session leaves a lock nobody
+# holds.
+
+CODEX_CALLS = ('function_call', 'custom_tool_call', 'web_search_call',
+               'local_shell_call')
+
+
+def codex_lock_held(path):
+    """Whether a running process still has this thread's lock file open."""
+    if sys.platform != 'win32':
+        # ponytail: the lock scheme is only verified on Windows. Elsewhere,
+        # fall back to "written recently" rather than claim more than we know.
+        try:
+            return time.time() - os.path.getmtime(path) < 900
+        except OSError:
+            return False
+    handle = _K32.CreateFileW(str(path), 0x80000000, 0, None, 3, 0, None)
+    if handle not in (None, 0, _INVALID_HANDLE):
+        _K32.CloseHandle(handle)
+        return False
+    # Opening can also fail because the lock was cleaned up mid-glob. Only a
+    # sharing violation means somebody is holding it; anything else is gone.
+    return ctypes.get_last_error() == 32  # ERROR_SHARING_VIOLATION
+
+
+def codex_live_ids(root=CODEX):
+    """Thread ids whose lock a running process still holds."""
+    locks = Path(root) / 'thread-writer-locks'
+    return [f.stem for f in sorted(locks.glob('*.lock'))
+            if not f.name.startswith('.') and codex_lock_held(f)]
+
+
+_CODEX_PATHS = {}
+
+
+def codex_rollout(sid, root=CODEX):
+    """The log file for one thread, or None if it has not written one yet.
+
+    A blank tab in the Codex app holds a lock before it has said anything,
+    and has no log at all. Only hits are kept - caching a miss would hide a
+    thread that starts talking a second later.
+    """
+    hit = _CODEX_PATHS.get(sid)
+    if hit:
+        return hit
+    hit = next(Path(root, 'sessions').rglob(f'*{sid}.jsonl'), None)
+    if hit:
+        _CODEX_PATHS[sid] = hit
+    return hit
+
+
+_CODEX_META = {}
+
+
+def codex_meta(path):
+    """The session_meta line Codex writes first: cwd, and the repo it opened
+    in. Written once and never changed, so reading it once is enough."""
+    key = str(path)
+    if key not in _CODEX_META:
+        try:
+            with open(path, encoding='utf-8') as fh:
+                _CODEX_META[key] = json.loads(fh.readline()).get('payload') or {}
+        except (OSError, ValueError):
+            _CODEX_META[key] = {}
+    return _CODEX_META[key]
+
+
+def codex_titles(root=CODEX):
+    """Thread id to the name shown in the Codex app, so two threads in one
+    repo can be told apart. Renaming rewrites this file, so it is re-read."""
+    out = {}
+    try:
+        with open(Path(root) / 'session_index.jsonl', encoding='utf-8') as fh:
+            for line in fh:
+                try:
+                    d = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if d.get('id') and d.get('thread_name'):
+                    out[d['id']] = str(d['thread_name'])
+    except OSError:
+        pass
+    return out
+
+
+def codex_call_label(payload, limit=26):
+    """Compact label for one Codex tool call."""
+    kind = payload.get('type')
+    if kind == 'web_search_call':
+        query = (payload.get('action') or {}).get('query')
+        return ('search ' + str(query))[:limit] if query else 'web search'
+    name = str(payload.get('name') or kind or '?')
+    if name in ('exec_command', 'shell', 'local_shell'):
+        try:
+            cmd = json.loads(payload.get('arguments') or '{}').get('cmd', '')
+        except (json.JSONDecodeError, TypeError):
+            cmd = ''
+        if isinstance(cmd, list):
+            cmd = ' '.join(map(str, cmd))
+        cmd = ' '.join(str(cmd).split())
+        return ('run ' + cmd)[:limit] if cmd else 'run'
+    return name[:limit]
+
+
+def read_codex_activity(entries):
+    """The same answers read_activity gives, but Codex states them outright.
+
+    task_started and task_complete bracket every turn, so an open turn is
+    work in progress and a closed one has handed back. Codex has no tool
+    whose job is to ask you something, so a Codex card never reads `asking`.
+    """
+    last_ts = next((d['timestamp'] for d in reversed(entries)
+                    if d.get('timestamp')), None)
+    trail, says, state, detail, since = [], '', 'idle', '', last_ts
+    for d in entries:
+        payload = d.get('payload')
+        if not isinstance(payload, dict):
+            continue
+        kind, ts = payload.get('type'), d.get('timestamp')
+        if d.get('type') == 'response_item' and kind in CODEX_CALLS:
+            trail.append(codex_call_label(payload))
+            detail, since = codex_call_label(payload, 90), ts or since
+        elif (d.get('type') == 'response_item' and kind == 'message'
+                and payload.get('role') == 'assistant'):
+            said = '\n'.join(b.get('text', '') for b in payload.get('content') or []
+                             if isinstance(b, dict))
+            if said.strip():
+                says = said
+        elif kind == 'task_started':
+            state, detail, since = 'working', 'thinking', ts or since
+        elif kind == 'task_complete':
+            state, since = 'done', ts or since
+            says = payload.get('last_agent_message') or says
+            detail = ''
+
+    if state == 'done':
+        # one line, not the same line twice
+        detail, says = headline(says, 110), ''
+    return {'state': state, 'detail': detail, 'since': since,
+            'trail': trail[-6:], 'last_ts': last_ts,
+            'says': headline(says, 160)}
+
+
+def codex_rows(root=CODEX):
+    titles = codex_titles(root)
+    rows = []
+    for sid in codex_live_ids(root):
+        path = codex_rollout(sid, root)
+        if path is None:
+            continue
+        cwd = codex_meta(path).get('cwd')
+        if not cwd:
+            continue
+        rows.append({
+            'agent': 'codex', 'sid': sid, 'cwd': cwd, 'pid': None,
+            'title': titles.get(sid) or sid[:8],
+            **read_codex_activity(tail_entries(path, CODEX_TAIL_BYTES)),
+        })
+    return rows
 
 
 # --------------------------------------------------------------------------
@@ -344,39 +566,69 @@ def flag_clashes(rows):
         folders.setdefault(os.path.normcase(r['cwd']), []).append(r)
         if r['branch']:
             branches.setdefault((r['repo'], r['branch']), []).append(r)
+    def warn(group, text):
+        # Naming the other agent matters now that Claude and Codex share the
+        # board: "another codex session" tells you where to go and look.
+        for r in group:
+            who = sorted({o.get('agent', 'claude') for o in group if o is not r})
+            r['warnings'].append(text.format(who=' and '.join(who)))
+
     for group in folders.values():
         if len(group) > 1:
-            for r in group:
-                r['warnings'].append('same folder as another session')
+            warn(group, 'another {who} session is in this same folder'
+                        ' — your edits can overwrite each other')
     for group in branches.values():
         if len(group) > 1 and len({os.path.normcase(r['cwd']) for r in group}) > 1:
-            for r in group:
-                r['warnings'].append('same branch as another session')
+            warn(group, 'another {who} session is on this branch'
+                        ' — your commits will interleave')
+    return rows
+
+
+_PREV_STATE = {}
+
+
+def note_change(sid, state, now=None):
+    """Whether this session's state changed recently enough to still glow.
+
+    The page is a full reload every few seconds and the browser remembers
+    nothing across one, so the server has to hold the previous state itself.
+    A session seen for the first time never glows - otherwise every card
+    would light up whenever the board restarts, which is noise, not news.
+    """
+    now = time.time() if now is None else now
+    prev, changed_at = _PREV_STATE.get(sid, (None, 0.0))
+    if prev != state:
+        changed_at = now if prev is not None else 0.0
+        _PREV_STATE[sid] = (state, changed_at)
+    return bool(changed_at) and now - changed_at < PULSE_SECONDS
+
+
+def claude_rows():
+    rows = []
+    for s in live_sessions():
+        tpath = transcript_path(s['cwd'], s['sessionId'])
+        entries = tail_entries(tpath)
+        rows.append({
+            'agent': 'claude', 'sid': s['sessionId'], 'cwd': s['cwd'],
+            'pid': s.get('pid'),
+            'title': (read_title(tpath, entries) or s.get('name')
+                      or s['sessionId'][:8]),
+            **read_activity(entries),
+        })
     return rows
 
 
 def collect():
     rows, gits = [], {}
-    for s in live_sessions():
-        cwd = s['cwd']
-        key = os.path.normcase(cwd)
+    for r in claude_rows() + codex_rows():
+        key = os.path.normcase(r['cwd'])
         if key not in gits:
-            gits[key] = git_info(cwd)
-        g = gits[key]
-        tpath = transcript_path(cwd, s['sessionId'])
-        entries = tail_entries(tpath)
-        act = read_activity(entries)
-        rows.append({
-            'cwd': cwd,
-            'folder': os.path.basename(cwd.rstrip('/\\')) or cwd,
-            'title': (read_title(tpath, entries) or s.get('name')
-                      or s['sessionId'][:8]),
-            'pid': s.get('pid'),
-            'started': s.get('startedAt'),
-            'warnings': [],
-            **g,
-            **act,
-        })
+            gits[key] = git_info(r['cwd'])
+        r.update(gits[key])
+        r['folder'] = os.path.basename(r['cwd'].rstrip('/\\')) or r['cwd']
+        r['warnings'] = []
+        r['pulse'] = note_change(r['sid'], r['state'])
+        rows.append(r)
     flag_clashes(rows)
 
     groups = {}
@@ -423,9 +675,20 @@ h2 { font-size:13px; font-weight:600; margin:18px 0 7px; color:#cfd4dc; }
 .card { background:#1c1f25; border:1px solid #282c34; border-left:3px solid #3d444d;
         border-radius:6px; padding:9px 11px; margin-bottom:7px; }
 .card.working { border-left-color:#3d8bfd; }
-.card.waiting { border-left-color:#e3b341; }
+.card.asking { border-left-color:#e3b341; }
+.card.done { border-left-color:#3fb950; }
 .card.thinking { border-left-color:#8957e5; }
 .card.clash { border-left-color:#e5534b; }
+.card.pulse { animation:pulse 1.5s ease-in-out infinite; }
+@keyframes pulse {
+  0%,100% { box-shadow:0 0 0 0 rgba(230,236,255,0); }
+  50%     { box-shadow:0 0 0 4px rgba(230,236,255,.30); }
+}
+.agent { font-size:10px; font-weight:700; letter-spacing:.05em;
+         text-transform:uppercase; padding:1px 6px; border-radius:9px;
+         background:#232936; color:#8b93a1; }
+.agent.claude { background:#2b2119; color:#e0a06a; }
+.agent.codex { background:#1a2a2a; color:#69c6c0; }
 .top { display:flex; align-items:baseline; gap:7px; flex-wrap:wrap; }
 .title { font-weight:600; color:#fff; font-size:13px; margin-bottom:2px;
          white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -437,7 +700,8 @@ h2 { font-size:13px; font-weight:600; margin:18px 0 7px; color:#cfd4dc; }
 .state { margin-top:6px; font-size:11px; font-weight:700; letter-spacing:.06em;
          text-transform:uppercase; }
 .state.working { color:#79b8ff; }
-.state.waiting { color:#f0c674; }
+.state.asking { color:#f0c674; }
+.state.done { color:#6fcf7f; }
 .state.thinking { color:#c39bff; }
 .state.idle { color:#8b93a1; }
 .state .dur { font-weight:400; letter-spacing:0; text-transform:none;
@@ -462,7 +726,7 @@ def render(groups, error=''):
         '<!doctype html><html><head><meta charset="utf-8">',
         f'<meta http-equiv="refresh" content="{REFRESH_SECONDS}">',
         '<title>Session Board</title>', f'<style>{CSS}</style></head><body>',
-        '<h1>Live Claude sessions</h1>',
+        '<h1>Live agent sessions</h1>',
     ]
     # No click-through to a session. The app registers claude:// and the
     # routes exist, but the whole code/ family is gated off in this build -
@@ -478,9 +742,13 @@ def render(groups, error=''):
         parts.append(f'<h2>{e(label)}</h2>')
         for r in rows:
             cls = 'clash' if r['warnings'] else r['state']
+            if r.get('pulse'):
+                cls += ' pulse'
             parts.append(f'<div class="card {cls}">')
             parts.append(f'<div class="title">{e(r["title"])}</div>')
             parts.append('<div class="top">')
+            agent = r.get('agent', 'claude')
+            parts.append(f'<span class="agent {e(agent)}">{e(agent)}</span>')
             if not r['is_main']:
                 parts.append(f'<span class="folder">{e(r["folder"])}</span>')
             if r['branch']:
@@ -490,8 +758,9 @@ def render(groups, error=''):
             parts.append(f'<span class="when">{e(ago(r["last_ts"]))}</span>')
             parts.append('</div>')
 
-            words = {'working': 'working', 'waiting': 'waiting for you',
-                     'thinking': 'thinking', 'idle': 'no recent activity'}
+            words = {'working': 'working', 'asking': 'needs your answer',
+                     'done': 'done — your turn', 'thinking': 'thinking',
+                     'idle': 'no recent activity'}
             parts.append(f'<div class="state {r["state"]}">{words[r["state"]]}'
                          f'<span class="dur"> &middot; {e(ago(r["since"]))}</span></div>')
             if r['detail']:
