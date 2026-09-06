@@ -128,12 +128,12 @@ def test_clashes_flag_shared_folder_and_shared_branch():
 
     same_folder = [row(r'C:\repo', 'R', 'main'), row(r'C:\REPO', 'R', 'main')]
     d.flag_clashes(same_folder)
-    assert all(len(r['warnings']) == 1 and 'same folder' in r['warnings'][0]
+    assert all(len(r['warnings']) == 1 and 'same files' in r['warnings'][0]
                for r in same_folder), same_folder
 
     same_branch = [row(r'C:\repo', 'R', 'feat'), row(r'C:\repo-wt', 'R', 'feat')]
     d.flag_clashes(same_branch)
-    assert all(len(r['warnings']) == 1 and 'on this branch' in r['warnings'][0]
+    assert all(len(r['warnings']) == 1 and 'same branch' in r['warnings'][0]
                for r in same_branch), same_branch
 
     # the warning names the other agent, so you know which app to go look in
@@ -152,6 +152,24 @@ def test_render_survives_a_broken_collect(monkey=None):
     """The page must say what went wrong rather than showing nothing."""
     page = d.render([], error='BoomError: git vanished')
     assert 'BoomError' in page and '<html' in page
+
+
+def test_a_card_labels_its_app_and_its_tool_row_once():
+    """The tool row means nothing without a name on it, the app has to be
+    readable at a glance, and the clock used to be printed twice."""
+    row = {'agent': 'codex', 'state': 'done', 'title': 'Some thread',
+           'folder': 'AlgoTrading', 'is_main': True, 'branch': 'main',
+           'dirty': 0, 'warnings': [], 'pulse': True,
+           'detail': 'found nothing', 'says': '',
+           'trail': ['run git status'], 'since': None, 'last_ts': None}
+    page = d.render([('AlgoTrading', [row])])
+
+    assert 'class="card done a-codex pulse"' in page, page
+    assert '.card.a-codex { border-right-color:#' in page, 'no app colour'
+    assert '<span class="lbl">last tools</span>' in page, 'tool row unlabelled'
+    assert page.count('&middot; &mdash;') + page.count('&middot; —') <= 1, \
+        'the same clock is printed twice'
+    assert 'class="when"' not in page, 'the duplicate clock came back'
 
 
 def test_title_prefers_a_rename_and_falls_back_to_a_full_scan():
@@ -318,9 +336,10 @@ def test_headline_uses_the_sessions_own_lead_and_never_splits_a_word():
     assert len(got) <= 31, got
 
 
-def test_a_card_only_glows_after_the_state_actually_changes():
+def test_a_card_glows_only_when_a_session_starts_wanting_you():
     """A brand new session must not glow - on a board restart every card
-    would light up at once, which is noise rather than news."""
+    would light up at once, which is noise rather than news. Answering a
+    question must end the glow rather than start a fresh one."""
     d._PREV_STATE.clear()
     assert not d.note_change('s1', 'working', now=100.0), 'first sight glowed'
     assert not d.note_change('s1', 'working', now=101.0), 'no change glowed'
@@ -328,9 +347,39 @@ def test_a_card_only_glows_after_the_state_actually_changes():
     assert d.note_change('s1', 'asking', now=110.0), 'glow ended too early'
     assert not d.note_change('s1', 'asking', now=102.0 + d.PULSE_SECONDS + 1), \
         'glow never ended'
+
+    # you answered: back to work, and the glow goes out at once
+    assert not d.note_change('s1', 'working', now=130.0), 'answering re-glowed'
+    # finishing a turn wants you again, so that does glow
+    assert d.note_change('s1', 'done', now=131.0), 'finishing did not glow'
+
     # a second session is tracked on its own
     assert not d.note_change('s2', 'asking', now=200.0)
     d._PREV_STATE.clear()
+
+
+def test_local_summaries_are_optional_and_never_block_the_page():
+    """The board has to work on a machine with no graphics card, so the model
+    is off unless configured - and a card must never wait on one."""
+    assert d.SUMMARY_MODEL == '', 'summaries must ship switched off'
+    assert d.summarise('read the config file', ['Read a.py']) == ''
+
+    d.SUMMARY_MODEL, d.OLLAMA_URL = 'test-model', 'http://127.0.0.1:9'
+    try:
+        d._SUMMARIES[d.summary_key('said', ['Read a.py'])] = 'reading the config'
+        assert d.summarise('said', ['Read a.py']) == 'reading the config'
+        # the turn moved on, so the cached answer must not be reused - and
+        # asking must hand back an empty line rather than wait for one
+        assert d.summarise('said', ['Read b.py']) == ''
+
+        # a turn with nothing in it is not worth waking the model for
+        d._ASKED.clear()
+        assert d.summarise('   ', ['Read a.py']) == ''
+        assert not d._ASKED, 'an empty turn was sent to the model'
+    finally:
+        d.SUMMARY_MODEL, d.OLLAMA_URL = '', 'http://127.0.0.1:11434'
+        d._SUMMARIES.clear()
+        d._ASKED.clear()
 
 
 def test_codex_liveness_is_a_held_lock_not_a_guess():

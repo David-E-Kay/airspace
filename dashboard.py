@@ -7,13 +7,16 @@ a session, spawns anything, or plans work.
 
 ponytail: single file, stdlib only. Split it when it stops fitting on a screen.
 """
+import hashlib
 import html
 import json
 import os
 import re
 import subprocess
 import sys
+import threading
 import time
+import urllib.request
 import webbrowser
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -31,8 +34,20 @@ CODEX_TAIL_BYTES = 256 * 1024
 PORT = 8765
 REFRESH_SECONDS = 10
 # How long a card keeps glowing after its state changed. Two refreshes, so a
-# change cannot slip past between glances.
+# change cannot slip past between glances. Only a change into a state that
+# wants you glows: answering a question moves the session back to work, and
+# that is the glow going away, not another one starting.
 PULSE_SECONDS = 25
+PULSE_STATES = ('asking', 'done')
+
+# Optional one-line summaries from a local model, off unless
+# BOARD_SUMMARY_MODEL names one - the board has to work on a machine with no
+# graphics card at all. On 2GB of spare memory, `qwen2.5:1.5b-instruct` fits
+# with room left over; `gemma3:1b` is smaller and blunter.
+#   set BOARD_SUMMARY_MODEL=qwen2.5:1.5b-instruct
+SUMMARY_MODEL = os.environ.get('BOARD_SUMMARY_MODEL', '')
+OLLAMA_URL = os.environ.get('BOARD_OLLAMA_URL', 'http://127.0.0.1:11434')
+SUMMARY_KEEP = 400
 
 # Launched from board.cmd there is no console, so Windows hands every console
 # program we start a brand new window of its own. git runs several times a
@@ -236,6 +251,69 @@ def headline(text, limit=120):
     if stop > limit // 3:
         return cut[:stop + 1]
     return cut[:cut.rfind(' ')] + '…' if ' ' in cut else cut
+
+
+# --------------------------------------------------------------------------
+# optional local summaries
+# --------------------------------------------------------------------------
+#
+# A rule can only pick words the session already wrote; it cannot compress
+# meaning. A small local model can. It is off by default because the board
+# must not need a graphics card, and it never runs on the page's own thread -
+# a card keeps its plain-text line until an answer arrives, one refresh later.
+
+SUMMARY_PROMPT = (
+    'One short line, at most 12 words, saying what this coding session is '
+    'doing. No preamble, no quotes.\n\n'
+    'IT SAID: {said}\nRECENT TOOLS: {trail}\n\nLINE:'
+)
+
+_SUMMARIES = {}
+_ASKED = set()
+_SUMMARY_LOCK = threading.Lock()
+
+
+def summary_key(said, trail):
+    """Same turn, same answer. A new tool means the turn has moved on."""
+    return hashlib.sha1('|'.join([said, *trail]).encode('utf-8')).hexdigest()
+
+
+def _fetch_summary(key, said, trail):
+    body = json.dumps({
+        'model': SUMMARY_MODEL, 'stream': False, 'keep_alive': '30m',
+        'prompt': SUMMARY_PROMPT.format(said=said[:1200], trail=', '.join(trail)),
+        'options': {'num_predict': 24, 'temperature': 0.2},
+    }).encode('utf-8')
+    line = ''
+    try:
+        req = urllib.request.Request(
+            OLLAMA_URL.rstrip('/') + '/api/generate', body,
+            {'Content-Type': 'application/json'})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            line = json.loads(r.read()).get('response') or ''
+    except Exception:
+        line = ''  # a model that is missing or down must not break the page
+    with _SUMMARY_LOCK:
+        _SUMMARIES[key] = ' '.join(line.split()).strip('"').rstrip('.')[:110]
+        _ASKED.discard(key)
+        for stale in list(_SUMMARIES)[:-SUMMARY_KEEP]:
+            _SUMMARIES.pop(stale, None)
+
+
+def summarise(said, trail):
+    """The model's one-line read of the turn, or '' until it arrives."""
+    if not SUMMARY_MODEL or not said.strip():
+        return ''
+    key = summary_key(said, trail)
+    with _SUMMARY_LOCK:
+        if key in _SUMMARIES:
+            return _SUMMARIES[key]
+        if key in _ASKED:
+            return ''
+        _ASKED.add(key)
+    threading.Thread(target=_fetch_summary, args=(key, said, trail),
+                     daemon=True).start()
+    return ''
 
 
 def blocks_of(entry):
@@ -575,12 +653,12 @@ def flag_clashes(rows):
 
     for group in folders.values():
         if len(group) > 1:
-            warn(group, 'another {who} session is in this same folder'
-                        ' — your edits can overwrite each other')
+            warn(group, 'a {who} session is editing the same files as this one'
+                        ' — whoever saves last wins')
     for group in branches.values():
         if len(group) > 1 and len({os.path.normcase(r['cwd']) for r in group}) > 1:
-            warn(group, 'another {who} session is on this branch'
-                        ' — your commits will interleave')
+            warn(group, 'a {who} session in another folder is saving to the'
+                        ' same branch — the two sets of changes will mix')
     return rows
 
 
@@ -594,11 +672,13 @@ def note_change(sid, state, now=None):
     nothing across one, so the server has to hold the previous state itself.
     A session seen for the first time never glows - otherwise every card
     would light up whenever the board restarts, which is noise, not news.
+    Only a move into a state that wants you glows, so answering a question
+    puts the card back to work and the glow stops rather than restarting.
     """
     now = time.time() if now is None else now
     prev, changed_at = _PREV_STATE.get(sid, (None, 0.0))
     if prev != state:
-        changed_at = now if prev is not None else 0.0
+        changed_at = now if prev is not None and state in PULSE_STATES else 0.0
         _PREV_STATE[sid] = (state, changed_at)
     return bool(changed_at) and now - changed_at < PULSE_SECONDS
 
@@ -628,6 +708,12 @@ def collect():
         r['folder'] = os.path.basename(r['cwd'].rstrip('/\\')) or r['cwd']
         r['warnings'] = []
         r['pulse'] = note_change(r['sid'], r['state'])
+        # A finished turn puts its prose in `detail`; a turn still running
+        # puts it in `says`. Either way the summary replaces the prose line,
+        # never the line naming the tool it is on.
+        line = summarise(r['says'] or r['detail'], r['trail'])
+        if line:
+            r['detail' if r['state'] == 'done' else 'says'] = line
         rows.append(r)
     flag_clashes(rows)
 
@@ -672,8 +758,15 @@ h2 { font-size:13px; font-weight:600; margin:18px 0 7px; color:#cfd4dc; }
        color:#c9d1d9; }
 .btn:hover { background:#2c313a; border-color:#4a5260; }
 .btn.hot { background:#3a2e15; border-color:#7a5c1e; color:#f0c674; }
+/* Two edges carry two different facts: the left is what the session is
+   doing, the right is which app it is. Grouping the page by app instead
+   would split a project across two lists - and a project holding both is
+   exactly the collision the board exists to show. */
 .card { background:#1c1f25; border:1px solid #282c34; border-left:3px solid #3d444d;
+        border-right:3px solid transparent;
         border-radius:6px; padding:9px 11px; margin-bottom:7px; }
+.card.a-claude { border-right-color:#8a6440; }
+.card.a-codex { border-right-color:#2f7f79; }
 .card.working { border-left-color:#3d8bfd; }
 .card.asking { border-left-color:#e3b341; }
 .card.done { border-left-color:#3fb950; }
@@ -684,11 +777,12 @@ h2 { font-size:13px; font-weight:600; margin:18px 0 7px; color:#cfd4dc; }
   0%,100% { box-shadow:0 0 0 0 rgba(230,236,255,0); }
   50%     { box-shadow:0 0 0 4px rgba(230,236,255,.30); }
 }
-.agent { font-size:10px; font-weight:700; letter-spacing:.05em;
-         text-transform:uppercase; padding:1px 6px; border-radius:9px;
+/* Pinned right, so the eye finds it in the same place on every card. */
+.agent { margin-left:auto; font-size:10px; font-weight:700; letter-spacing:.05em;
+         text-transform:uppercase; padding:1px 7px; border-radius:9px;
          background:#232936; color:#8b93a1; }
 .agent.claude { background:#2b2119; color:#e0a06a; }
-.agent.codex { background:#1a2a2a; color:#69c6c0; }
+.agent.codex { background:#16292a; color:#69c6c0; }
 .top { display:flex; align-items:baseline; gap:7px; flex-wrap:wrap; }
 .title { font-weight:600; color:#fff; font-size:13px; margin-bottom:2px;
          white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -696,7 +790,6 @@ h2 { font-size:13px; font-weight:600; margin:18px 0 7px; color:#cfd4dc; }
 .branch { font-family:Consolas,monospace; font-size:12px; color:#7ee787;
           background:#1b2b1f; padding:0 7px; border-radius:10px; }
 .dirty { font-size:11px; color:#e3b341; }
-.when { margin-left:auto; font-size:11px; color:#8b93a1; }
 .state { margin-top:6px; font-size:11px; font-weight:700; letter-spacing:.06em;
          text-transform:uppercase; }
 .state.working { color:#79b8ff; }
@@ -712,6 +805,9 @@ h2 { font-size:13px; font-weight:600; margin:18px 0 7px; color:#cfd4dc; }
 .trail { margin-top:5px; font-family:Consolas,monospace; font-size:11px;
          color:#6e7681; white-space:nowrap; overflow:hidden;
          text-overflow:ellipsis; }
+.trail .lbl { font-family:"Segoe UI",system-ui,sans-serif; font-size:9px;
+              font-weight:700; letter-spacing:.07em; text-transform:uppercase;
+              color:#565d68; margin-right:7px; }
 .says { margin-top:4px; font-size:11px; color:#7d8590; white-space:nowrap;
         overflow:hidden; text-overflow:ellipsis; }
 .warn-line { margin-top:5px; font-size:11px; color:#ff7b72; }
@@ -741,21 +837,21 @@ def render(groups, error=''):
     for label, rows in groups:
         parts.append(f'<h2>{e(label)}</h2>')
         for r in rows:
+            agent = r.get('agent', 'claude')
             cls = 'clash' if r['warnings'] else r['state']
-            if r.get('pulse'):
-                cls += ' pulse'
+            cls += f' a-{agent}' + (' pulse' if r.get('pulse') else '')
             parts.append(f'<div class="card {cls}">')
             parts.append(f'<div class="title">{e(r["title"])}</div>')
             parts.append('<div class="top">')
-            agent = r.get('agent', 'claude')
-            parts.append(f'<span class="agent {e(agent)}">{e(agent)}</span>')
             if not r['is_main']:
                 parts.append(f'<span class="folder">{e(r["folder"])}</span>')
             if r['branch']:
                 parts.append(f'<span class="branch">{e(r["branch"])}</span>')
             if r['dirty']:
                 parts.append(f'<span class="dirty">{r["dirty"]} uncommitted</span>')
-            parts.append(f'<span class="when">{e(ago(r["last_ts"]))}</span>')
+            # The "how long" beside the state says the same thing as a second
+            # clock in the corner did, so there is only one now.
+            parts.append(f'<span class="agent {e(agent)}">{e(agent)}</span>')
             parts.append('</div>')
 
             words = {'working': 'working', 'asking': 'needs your answer',
@@ -766,8 +862,9 @@ def render(groups, error=''):
             if r['detail']:
                 parts.append(f'<div class="detail">{e(r["detail"])}</div>')
             if r['trail']:
-                parts.append('<div class="trail">'
-                             + e(' → '.join(r['trail'])) + '</div>')
+                parts.append('<div class="trail"><span class="lbl">last '
+                             'tools</span>' + e(' → '.join(r['trail']))
+                             + '</div>')
             if r['says']:
                 parts.append(f'<div class="says">{e(r["says"][:160])}</div>')
             for w in r['warnings']:
