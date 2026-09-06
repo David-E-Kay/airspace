@@ -742,7 +742,14 @@ def claude_rows():
     return rows
 
 
-def collect():
+def session_rows():
+    """Every session running right now, with the git context of its folder.
+
+    The board renders these; the session-start hook asks the same question of
+    the same function. Collisions are a separate step because the hook has to
+    add its own session to the list first, before its transcript exists to be
+    found.
+    """
     rows, gits = [], {}
     for r in claude_rows() + codex_rows():
         key = os.path.normcase(r['cwd'])
@@ -751,12 +758,34 @@ def collect():
         r.update(gits[key])
         r['folder'] = os.path.basename(r['cwd'].rstrip('/\\')) or r['cwd']
         r['warnings'] = []
+        rows.append(r)
+    return rows
+
+
+def clashes_for(cwd, session_id=''):
+    """The collisions a session starting in `cwd` is walking into.
+
+    At session start its own transcript is empty, so it is not in
+    `session_rows` yet - and a lone neighbour would then read as no clash at
+    all. A stand-in row goes in for it, and the ordinary rules run over that.
+    """
+    rows = [r for r in session_rows()
+            if not (session_id and r['sid'].startswith(session_id))]
+    me = {'sid': session_id or 'me', 'agent': 'claude', 'cwd': cwd,
+          'warnings': [], **git_info(cwd)}
+    rows.append(me)
+    flag_clashes(rows)
+    return me['warnings']
+
+
+def collect():
+    rows = session_rows()
+    for r in rows:
         r['pulse'] = note_change(r['sid'], r['state'])
         # Its own row now. It used to overwrite whichever prose line the
         # state happened to use, which left the card unable to say which of
         # the two you were reading.
         r['summary'] = summarise(r['says'] or r['detail'], r['trail'])
-        rows.append(r)
     flag_clashes(rows)
 
     groups = {}

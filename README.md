@@ -1,12 +1,23 @@
-# Session board
+# Multi-agent session toolkit
 
-One page showing what every live Claude Code and Codex session is doing.
+Support for running several Claude Code and Codex sessions at once without
+them treading on each other.
 
-Read-only. It reads the files those apps already write about themselves, asks
-git about each folder, and renders a page that refreshes itself. It never
-writes to a session, starts anything, or plans work.
+Read-only throughout. It reads the files those apps already write about
+themselves and asks git about each folder. It never writes to a session,
+starts anything, or plans work.
 
-## Running it
+Two pieces, one detector between them:
+
+- **The board** (`dashboard.py`) - one page showing what every live session
+  is doing, refreshing itself.
+- **The session-start hook** (`hooks/git-workspace-brief.py`) - tells a
+  starting session where it is and who else is already there.
+
+Both call `session_rows()` and `flag_clashes()` in `dashboard.py`, so the
+page and the hook can never disagree about who is running.
+
+## Running the board
 
 Double-click the **Session Board** icon on the Desktop, or `board.cmd` in this
 folder, or:
@@ -122,6 +133,34 @@ you will rarely see a summary.
 
 `BOARD_OLLAMA_URL` points at a different Ollama if yours is not on
 `http://127.0.0.1:11434`.
+
+## The session-start hook
+
+`hooks/git-workspace-brief.py` runs when a Claude Code session starts, in any
+repository. It reports the branch, the trunk, how many files are uncommitted,
+the worktree list, and any collision with a session already running.
+
+Wire it up in `~/.claude/settings.json`:
+
+```json
+"SessionStart": [
+  { "hooks": [ { "type": "command", "timeout": 15,
+      "command": "python \"<path to this repo>/hooks/git-workspace-brief.py\"" } ] }
+]
+```
+
+It takes about a second, against a fifteen-second budget, and the cost is
+paid once per session rather than per turn.
+
+The collision check used to be a guess: it counted session log files touched
+in the last fifteen minutes, so a session idle for fourteen looked live, it
+could not see Codex at all, and two folders sharing one branch were invisible
+to it. It now asks the board's own code, which checks whether the process is
+genuinely running.
+
+If `dashboard.py` cannot be loaded, the brief says so out loud rather than
+reporting no collisions. Silence would read as "nobody else is here", which
+is the one wrong answer that costs you work.
 
 ## Tests
 

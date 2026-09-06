@@ -3,8 +3,10 @@
 
 Run: python test_dashboard.py
 """
+import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -619,6 +621,120 @@ def test_a_summary_does_not_park_the_model_in_the_gpu_for_half_an_hour():
         d.urllib.request.urlopen = real
         d.SUMMARY_MODEL = ''
         d._SUMMARIES.clear()
+
+
+def test_a_starting_session_sees_the_collision_it_is_walking_into():
+    """The hook asks this before its own transcript exists, so the session
+    doing the asking has to be counted in even though nothing lists it yet."""
+    here = os.path.normcase(os.path.abspath('C:/repos/app'))
+    other = os.path.normcase(os.path.abspath('C:/repos/app-wt'))
+
+    def neighbour(cwd, sid='n1', branch='feature'):
+        return {'sid': sid, 'agent': 'codex', 'cwd': cwd, 'warnings': [],
+                'repo': 'r', 'label': 'app', 'branch': branch, 'dirty': 0,
+                'is_main': True}
+
+    real_rows, real_git = d.session_rows, d.git_info
+    try:
+        d.git_info = lambda cwd: {'repo': 'r', 'label': 'app',
+                                  'branch': 'feature', 'dirty': 0,
+                                  'is_main': True}
+
+        d.session_rows = lambda: []
+        assert d.clashes_for(here) == [], 'an empty machine has no collisions'
+
+        d.session_rows = lambda: [neighbour(here)]
+        heads = [h for h, _ in d.clashes_for(here)]
+        assert heads == ['same worktree'], heads
+
+        # the same folder, but it is us - a session must not warn about itself
+        d.session_rows = lambda: [neighbour(here, sid='abc123')]
+        assert d.clashes_for(here, 'abc123') == [], 'warned about itself'
+
+        # a different folder on the same branch is the case the old hook,
+        # which only counted transcripts in this project, could never see
+        d.session_rows = lambda: [neighbour(other)]
+        heads = [h for h, _ in d.clashes_for(here)]
+        assert heads == ['same branch'], heads
+
+        d.session_rows = lambda: [neighbour(other, branch='other-branch')]
+        assert d.clashes_for(here) == [], 'a different branch is not a clash'
+    finally:
+        d.session_rows, d.git_info = real_rows, real_git
+
+
+def test_the_session_start_hook_runs_and_reports_the_workspace():
+    """The hook is a separate process reaching back into dashboard.py, so an
+    import that only works from the repo root would break it silently."""
+    hook = Path(__file__).resolve().parent / 'hooks' / 'git-workspace-brief.py'
+    assert hook.exists(), hook
+
+    with tempfile.TemporaryDirectory() as tmp:
+        for args in (['init', '-q'], ['config', 'user.email', 'a@b.c'],
+                     ['config', 'user.name', 'T'],
+                     ['commit', '-q', '--allow-empty', '-m', 'x']):
+            subprocess.run(['git', *args], cwd=tmp, capture_output=True)
+        out = subprocess.run(
+            [sys.executable, str(hook)],
+            input=json.dumps({'cwd': tmp, 'session_id': 'nobody'}),
+            capture_output=True, text=True, timeout=60, cwd=tempfile.gettempdir())
+        assert out.returncode == 0, out.stderr
+        ctx = json.loads(out.stdout)['hookSpecificOutput']['additionalContext']
+
+    assert 'GIT WORKSPACE' in ctx, ctx
+    assert 'trunk: main' in ctx, ctx
+    assert 'worktrees' in ctx, ctx
+    assert 'CLAUDE.md section 8' in ctx, ctx
+    # a fresh empty repo has nobody else in it
+    assert 'WARNING' not in ctx, ctx
+    # ...and "nobody else" must mean nobody, not a failed import
+    assert 'collision check unavailable' not in ctx, ctx
+
+
+def test_the_hook_actually_prints_the_collisions_it_is_given():
+    """Companion to the check above. That one only ever proves the hook can
+    stay quiet; a hook wired to nothing would pass it forever."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        'workspace_brief',
+        Path(__file__).resolve().parent / 'hooks' / 'git-workspace-brief.py')
+    hook = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(hook)
+
+    real_clashes, real_stdin, real_out = d.clashes_for, sys.stdin, sys.stdout
+    try:
+        d.clashes_for = lambda cwd, sid='': [('same branch', 'a codex '
+                                              'session saves here too')]
+        sys.stdin = io.StringIO(json.dumps({'cwd': os.getcwd(),
+                                            'session_id': 'nobody'}))
+        sys.stdout = io.StringIO()
+        hook.main()
+        ctx = json.loads(sys.stdout.getvalue())['hookSpecificOutput'][
+            'additionalContext']
+    finally:
+        d.clashes_for, sys.stdin, sys.stdout = real_clashes, real_stdin, real_out
+
+    assert 'WARNING: SAME BRANCH' in ctx, ctx
+    assert 'a codex session saves here too' in ctx, ctx
+
+    # and when the check cannot run at all, silence would read as "nobody
+    # else is here" - the one wrong answer that gets work clobbered
+    def broken(cwd, sid=''):
+        raise RuntimeError('no dashboard')
+
+    try:
+        d.clashes_for = broken
+        sys.stdin = io.StringIO(json.dumps({'cwd': os.getcwd(),
+                                            'session_id': 'nobody'}))
+        sys.stdout = io.StringIO()
+        hook.main()
+        ctx = json.loads(sys.stdout.getvalue())['hookSpecificOutput'][
+            'additionalContext']
+    finally:
+        d.clashes_for, sys.stdin, sys.stdout = real_clashes, real_stdin, real_out
+
+    assert 'collision check unavailable' in ctx, ctx
+    assert 'RuntimeError' in ctx, ctx
 
 
 if __name__ == '__main__':
