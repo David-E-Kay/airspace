@@ -60,7 +60,8 @@ def test_state_is_done_when_the_turn_ended_on_text():
     ]
     got = d.read_activity(entries)
     assert got['state'] == 'done', got['state']
-    assert got['detail'] == 'All done.', got['detail']
+    assert got['detail'] == '', 'a finished turn has no action to name'
+    assert got['says'] == 'All done.', got['says']
     assert got['since'] == '2026-09-05T10:00:20Z', got['since']
 
 
@@ -162,13 +163,17 @@ def test_a_card_labels_its_app_and_its_tool_row_once():
     row = {'agent': 'codex', 'state': 'done', 'title': 'Some thread',
            'folder': 'AlgoTrading', 'is_main': True, 'branch': 'main',
            'dirty': 0, 'warnings': [], 'pulse': True,
-           'detail': 'found nothing', 'says': '',
+           'detail': '', 'says': 'found nothing',
+           'summary': 'looked for the config and came up empty',
            'trail': ['run git status'], 'since': None, 'last_ts': None}
     page = d.render([('AlgoTrading', [row])])
 
     assert 'class="card done a-codex pulse"' in page, page
     assert '.card.a-codex { border-right-color:#' in page, 'no app colour'
     assert '<span class="lbl">last tools</span>' in page, 'tool row unlabelled'
+    # two rows of prose about the same turn - each has to say which it is
+    assert '<span class="lbl">turn summary</span>looked for the config' in page,         'the summary row is unlabelled'
+    assert '<span class="lbl">last message</span>found nothing' in page,         'the message row is unlabelled'
     assert page.count('&middot; &mdash;') + page.count('&middot; —') <= 1, \
         'the same clock is printed twice'
     assert 'class="when"' not in page, 'the duplicate clock came back'
@@ -502,8 +507,8 @@ def test_codex_reads_the_turn_markers_and_the_command():
     ]
     got = d.read_codex_activity(closed)
     assert got['state'] == 'done', got['state']
-    assert got['detail'] == 'Nothing found.', got['detail']
-    assert got['says'] == '', got['says']
+    assert got['detail'] == '', 'a finished turn has no action to name'
+    assert got['says'] == 'Nothing found.', got['says']
     assert got['trail'] == ['run git status', 'search codex session docs'], \
         got['trail']
     assert got['since'] == '2026-09-06T10:00:09Z', got['since']
@@ -535,6 +540,85 @@ def test_codex_title_and_working_folder_come_off_disk():
         assert d.codex_rollout('zzz', root=root) is None
 
     assert d.codex_titles(root=Path(tmp) / 'gone') == {}
+
+
+def test_the_gpu_is_given_back_when_the_window_shuts():
+    """A board nobody is looking at must not sit on VRAM. Two halves: the
+    page going quiet is what counts as shut, and the unload has to actually
+    reach Ollama with a keep_alive of zero."""
+    now = 1000.0
+    real_seen = d._LAST_SEEN
+    try:
+        d._LAST_SEEN = now
+        assert not d.window_gone(now + d.IDLE_EXIT_SECONDS - 1), \
+            'a page that just refreshed is not a shut window'
+        assert d.window_gone(now + d.IDLE_EXIT_SECONDS + 1), \
+            'the window has been silent for longer than a refresh can explain'
+    finally:
+        d._LAST_SEEN = real_seen
+
+    sent = []
+
+    class Fake:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    real = d.urllib.request.urlopen
+    try:
+        d.urllib.request.urlopen = \
+            lambda req, **k: (sent.append(json.loads(req.data)), Fake())[1]
+
+        d.SUMMARY_MODEL = ''
+        d.unload_model()
+        assert sent == [], 'nothing to unload when summaries are off'
+
+        d.SUMMARY_MODEL = 'test-model'
+        d.unload_model()
+        assert len(sent) == 1 and sent[0]['keep_alive'] == 0, sent
+        assert sent[0]['model'] == 'test-model', sent
+
+        def dead(*a, **k):
+            raise OSError('connection refused')
+
+        d.urllib.request.urlopen = dead
+        d.unload_model()          # Ollama already gone must not raise
+    finally:
+        d.urllib.request.urlopen = real
+        d.SUMMARY_MODEL = ''
+
+
+def test_a_summary_does_not_park_the_model_in_the_gpu_for_half_an_hour():
+    """The hold after a summary has to be short enough that a board left
+    open, but no longer summarising anything, gives the GPU back on its own."""
+    assert d.KEEP_ALIVE.endswith('m') and int(d.KEEP_ALIVE[:-1]) <= 5, \
+        d.KEEP_ALIVE
+
+    sent = []
+
+    class Fake:
+        def read(self):
+            return json.dumps({'response': 'x'}).encode('utf-8')
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    real = d.urllib.request.urlopen
+    d.SUMMARY_MODEL = 'test-model'
+    try:
+        d.urllib.request.urlopen = \
+            lambda req, **k: (sent.append(json.loads(req.data)), Fake())[1]
+        d._fetch_summary('ka', 'said', [])
+        assert sent[0]['keep_alive'] == d.KEEP_ALIVE, sent
+    finally:
+        d.urllib.request.urlopen = real
+        d.SUMMARY_MODEL = ''
+        d._SUMMARIES.clear()
 
 
 if __name__ == '__main__':

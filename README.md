@@ -8,11 +8,18 @@ writes to a session, starts anything, or plans work.
 
 ## Running it
 
-Double-click `board.cmd`, or:
+Double-click the **Session Board** icon on the Desktop, or `board.cmd` in this
+folder, or:
 
 ```
 python dashboard.py
 ```
+
+Close the window and the board stops about a minute later, giving back the
+memory it was using.
+
+If the Desktop icon is ever lost: right-click `board.cmd`, **Show more
+options**, **Send to**, **Desktop (create shortcut)**.
 
 It opens at <http://127.0.0.1:8765>. Use the numeric address rather than
 `localhost` — the server is IPv4-only and Windows tries IPv6 first, which
@@ -34,6 +41,10 @@ The **left edge** is what the session is doing:
 
 A card **glows** for 25 seconds when it moves into "needs your answer" or
 "done". Replying puts the session back to work and the glow stops.
+
+Under the state are up to three rows: the action it is on, **turn summary**
+(the local model's read of the turn, if summaries are on) and **last message**
+(what the session actually wrote).
 
 The **right edge** and the corner tag say which app it is — Claude or Codex.
 
@@ -81,6 +92,16 @@ processes.
 
 A model named here but not installed is not an error: the request fails, the
 card keeps its plain-text line, and the page is unaffected.
+
+### It gives the GPU back
+
+The model is held for five minutes after the last summary, then Ollama drops
+it. Closing the board window drops it straight away — the page asks the board
+for a fresh copy of itself every ten seconds, so a minute of silence means the
+window is gone, and the board unloads the model and shuts down. Nothing is
+left sitting on video memory.
+
+`ollama ps` shows what is loaded, if you want to check.
 
 ### Choosing a model
 

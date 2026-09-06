@@ -48,6 +48,12 @@ PULSE_STATES = ('asking', 'done')
 SUMMARY_MODEL = os.environ.get('BOARD_SUMMARY_MODEL', '')
 OLLAMA_URL = os.environ.get('BOARD_OLLAMA_URL', 'http://127.0.0.1:11434')
 SUMMARY_KEEP = 400
+# How long Ollama holds the model in the GPU after a summary. Short, so a
+# board left open overnight is not sitting on VRAM it has stopped using.
+KEEP_ALIVE = '5m'
+# The page reloads itself every REFRESH_SECONDS. Going quiet for this long
+# means the window is shut, and the board has nothing left to serve.
+IDLE_EXIT_SECONDS = 60
 
 # Launched from board.cmd there is no console, so Windows hands every console
 # program we start a brand new window of its own. git runs several times a
@@ -299,7 +305,7 @@ def summary_key(said, trail):
 
 def _fetch_summary(key, said, trail):
     body = json.dumps({
-        'model': SUMMARY_MODEL, 'stream': False, 'keep_alive': '30m',
+        'model': SUMMARY_MODEL, 'stream': False, 'keep_alive': KEEP_ALIVE,
         'prompt': SUMMARY_PROMPT.format(said=said[:1200], trail=', '.join(trail)),
         'options': {'num_predict': 24, 'temperature': 0.2},
     }).encode('utf-8')
@@ -317,6 +323,22 @@ def _fetch_summary(key, said, trail):
         _ASKED.discard(key)
         for stale in list(_SUMMARIES)[:-SUMMARY_KEEP]:
             _SUMMARIES.pop(stale, None)
+
+
+def unload_model():
+    """Drop the model out of the GPU now, instead of waiting KEEP_ALIVE."""
+    if not SUMMARY_MODEL:
+        return
+    body = json.dumps({'model': SUMMARY_MODEL, 'prompt': '',
+                       'keep_alive': 0}).encode('utf-8')
+    try:
+        req = urllib.request.Request(
+            OLLAMA_URL.rstrip('/') + '/api/generate', body,
+            {'Content-Type': 'application/json'})
+        with urllib.request.urlopen(req, timeout=5):
+            pass
+    except Exception:
+        pass  # nothing to unload if Ollama is already gone
 
 
 def summarise(said, trail):
@@ -388,8 +410,9 @@ def read_activity(entries):
             detail = summarise_tool(name, bs[-1].get('input') or {})
         elif last['type'] == 'assistant':
             state = 'done'
-            # one line, not the same line twice
-            detail, says = headline(says, 110), ''
+            # Nothing is running, so there is no action to name. The last
+            # message below carries the whole of it.
+            detail = ''
         else:
             state = 'thinking'
             detail = ('tool finished, composing a reply'
@@ -588,8 +611,8 @@ def read_codex_activity(entries):
             detail = ''
 
     if state == 'done':
-        # one line, not the same line twice
-        detail, says = headline(says, 110), ''
+        # Nothing is running, so there is no action to name.
+        detail = ''
     return {'state': state, 'detail': detail, 'since': since,
             'trail': trail[-6:], 'last_ts': last_ts,
             'says': headline(says, 160)}
@@ -729,12 +752,10 @@ def collect():
         r['folder'] = os.path.basename(r['cwd'].rstrip('/\\')) or r['cwd']
         r['warnings'] = []
         r['pulse'] = note_change(r['sid'], r['state'])
-        # A finished turn puts its prose in `detail`; a turn still running
-        # puts it in `says`. Either way the summary replaces the prose line,
-        # never the line naming the tool it is on.
-        line = summarise(r['says'] or r['detail'], r['trail'])
-        if line:
-            r['detail' if r['state'] == 'done' else 'says'] = line
+        # Its own row now. It used to overwrite whichever prose line the
+        # state happened to use, which left the card unable to say which of
+        # the two you were reading.
+        r['summary'] = summarise(r['says'] or r['detail'], r['trail'])
         rows.append(r)
     flag_clashes(rows)
 
@@ -826,9 +847,9 @@ h2 { font-size:13px; font-weight:600; margin:18px 0 7px; color:#cfd4dc; }
 .trail { margin-top:5px; font-family:Consolas,monospace; font-size:11px;
          color:#6e7681; white-space:nowrap; overflow:hidden;
          text-overflow:ellipsis; }
-.trail .lbl { font-family:"Segoe UI",system-ui,sans-serif; font-size:9px;
-              font-weight:700; letter-spacing:.07em; text-transform:uppercase;
-              color:#565d68; margin-right:7px; }
+.lbl { font-family:"Segoe UI",system-ui,sans-serif; font-size:9px;
+       font-weight:700; letter-spacing:.07em; text-transform:uppercase;
+       color:#565d68; margin-right:7px; }
 .says { margin-top:4px; font-size:11px; color:#7d8590; white-space:nowrap;
         overflow:hidden; text-overflow:ellipsis; }
 .warn-line { margin-top:5px; font-size:11px; color:#ff7b72; }
@@ -884,12 +905,17 @@ def render(groups, error=''):
                          f'<span class="dur"> &middot; {e(ago(r["since"]))}</span></div>')
             if r['detail']:
                 parts.append(f'<div class="detail">{e(r["detail"])}</div>')
+            # Both rows are prose about the turn, so each says which it is.
+            if r.get('summary'):
+                parts.append('<div class="says"><span class="lbl">turn '
+                             'summary</span>' + e(r['summary']) + '</div>')
+            if r['says']:
+                parts.append('<div class="says"><span class="lbl">last '
+                             'message</span>' + e(r['says'][:160]) + '</div>')
             if r['trail']:
                 parts.append('<div class="trail"><span class="lbl">last '
                              'tools</span>' + e(' → '.join(r['trail']))
                              + '</div>')
-            if r['says']:
-                parts.append(f'<div class="says">{e(r["says"][:160])}</div>')
             for head, body in r['warnings']:
                 parts.append('<div class="warn-line"><span class="warn-head">'
                              f'warning: {e(head)}</span> — {e(body)}</div>')
@@ -918,8 +944,31 @@ def build_page():
 # serve
 # --------------------------------------------------------------------------
 
+_LAST_SEEN = time.time()
+
+
+def window_gone(now=None):
+    """Has the page stopped asking for itself?
+
+    ponytail: a heartbeat, not a watched browser process. Chrome hands an
+    --app window to a Chrome that is already running and the process we
+    launched exits half a second later, so its exit says nothing at all.
+    """
+    return (now or time.time()) - _LAST_SEEN > IDLE_EXIT_SECONDS
+
+
+def close_with_the_window():
+    while True:
+        time.sleep(REFRESH_SECONDS)
+        if window_gone():
+            unload_model()
+            os._exit(0)
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
+        global _LAST_SEEN
+        _LAST_SEEN = time.time()
         if self.path not in ('/', '/index.html'):
             self.send_error(404)
             return
@@ -952,6 +1001,8 @@ def main():
     print(f'Session board on {url}   (Ctrl+C to stop)')
     if '--no-browser' not in sys.argv:
         print('Opened in', open_window(url))
+        # Close the window and the board stops, freeing the GPU with it.
+        threading.Thread(target=close_with_the_window, daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
