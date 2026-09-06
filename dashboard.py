@@ -268,6 +268,25 @@ SUMMARY_PROMPT = (
     'IT SAID: {said}\nRECENT TOOLS: {trail}\n\nLINE:'
 )
 
+# A 1.5B model spends a third of the line restating the question - "This
+# coding session is..." - and asking it not to made things worse: it shouted
+# in capitals and echoed the prompt back instead. Small models follow "do
+# this" far better than "never do that", so the tidying is a rule, not a
+# request.
+_ECHO = re.compile(r'^(?:line|it said)\s*:\s*', re.I)
+_PREAMBLE = re.compile(
+    r'^(?:the\s+|this\s+)?(?:coding\s+)?session\s+'
+    r'(?:is\s+|aims\s+to\s+|appears\s+to\s+be\s+|focus(?:es|ing)\s+on\s+)?',
+    re.I)
+
+
+def clean_summary(line):
+    s = ' '.join(str(line).split()).strip('"').rstrip('.')
+    s = _PREAMBLE.sub('', _ECHO.sub('', s))
+    if s.isupper():
+        s = s[:1] + s[1:].lower()
+    return s[:110]
+
 _SUMMARIES = {}
 _ASKED = set()
 _SUMMARY_LOCK = threading.Lock()
@@ -294,7 +313,7 @@ def _fetch_summary(key, said, trail):
     except Exception:
         line = ''  # a model that is missing or down must not break the page
     with _SUMMARY_LOCK:
-        _SUMMARIES[key] = ' '.join(line.split()).strip('"').rstrip('.')[:110]
+        _SUMMARIES[key] = clean_summary(line)
         _ASKED.discard(key)
         for stale in list(_SUMMARIES)[:-SUMMARY_KEEP]:
             _SUMMARIES.pop(stale, None)
@@ -644,21 +663,23 @@ def flag_clashes(rows):
         folders.setdefault(os.path.normcase(r['cwd']), []).append(r)
         if r['branch']:
             branches.setdefault((r['repo'], r['branch']), []).append(r)
-    def warn(group, text):
+    def warn(group, head, text):
         # Naming the other agent matters now that Claude and Codex share the
         # board: "another codex session" tells you where to go and look.
         for r in group:
             who = sorted({o.get('agent', 'claude') for o in group if o is not r})
-            r['warnings'].append(text.format(who=' and '.join(who)))
+            r['warnings'].append((head, text.format(who=' and '.join(who))))
 
     for group in folders.values():
         if len(group) > 1:
-            warn(group, 'a {who} session is editing the same files as this one'
-                        ' — whoever saves last wins')
+            warn(group, 'same worktree',
+                 'a {who} session is editing these same files,'
+                 ' so whoever saves last wins')
     for group in branches.values():
         if len(group) > 1 and len({os.path.normcase(r['cwd']) for r in group}) > 1:
-            warn(group, 'a {who} session in another folder is saving to the'
-                        ' same branch — the two sets of changes will mix')
+            warn(group, 'same branch',
+                 'a {who} session in another folder saves to this branch too,'
+                 ' so the two sets of changes will mix')
     return rows
 
 
@@ -811,6 +832,8 @@ h2 { font-size:13px; font-weight:600; margin:18px 0 7px; color:#cfd4dc; }
 .says { margin-top:4px; font-size:11px; color:#7d8590; white-space:nowrap;
         overflow:hidden; text-overflow:ellipsis; }
 .warn-line { margin-top:5px; font-size:11px; color:#ff7b72; }
+.warn-head { font-weight:700; letter-spacing:.05em; text-transform:uppercase;
+             font-size:10px; color:#ff9c94; }
 .empty { color:#8b93a1; padding:20px 0; }
 footer { margin-top:20px; font-size:10px; color:#5b626d; }
 """
@@ -867,12 +890,19 @@ def render(groups, error=''):
                              + '</div>')
             if r['says']:
                 parts.append(f'<div class="says">{e(r["says"][:160])}</div>')
-            for w in r['warnings']:
-                parts.append(f'<div class="warn-line">! {e(w)}</div>')
+            for head, body in r['warnings']:
+                parts.append('<div class="warn-line"><span class="warn-head">'
+                             f'warning: {e(head)}</span> — {e(body)}</div>')
             parts.append('</div>')
 
+    # The model is read from the environment once, at startup, so this line
+    # is the quickest way to tell whether a BOARD_SUMMARY_MODEL actually
+    # reached the board or was set in a window it never saw.
+    summaries = f'summaries: {e(SUMMARY_MODEL)}' if SUMMARY_MODEL \
+        else 'summaries: off (set BOARD_SUMMARY_MODEL)'
     parts.append(f'<footer>refreshed {time.strftime("%H:%M:%S")} '
-                 f'&middot; every {REFRESH_SECONDS}s &middot; read-only</footer>')
+                 f'&middot; every {REFRESH_SECONDS}s &middot; read-only '
+                 f'&middot; {summaries}</footer>')
     parts.append('</body></html>')
     return ''.join(parts)
 

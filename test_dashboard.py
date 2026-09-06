@@ -128,20 +128,22 @@ def test_clashes_flag_shared_folder_and_shared_branch():
 
     same_folder = [row(r'C:\repo', 'R', 'main'), row(r'C:\REPO', 'R', 'main')]
     d.flag_clashes(same_folder)
-    assert all(len(r['warnings']) == 1 and 'same files' in r['warnings'][0]
+    assert all(r['warnings'][0][0] == 'same worktree'
+               and 'same files' in r['warnings'][0][1]
                for r in same_folder), same_folder
 
     same_branch = [row(r'C:\repo', 'R', 'feat'), row(r'C:\repo-wt', 'R', 'feat')]
     d.flag_clashes(same_branch)
-    assert all(len(r['warnings']) == 1 and 'same branch' in r['warnings'][0]
+    assert all(r['warnings'][0][0] == 'same branch'
+               and 'changes will mix' in r['warnings'][0][1]
                for r in same_branch), same_branch
 
     # the warning names the other agent, so you know which app to go look in
     mixed = [dict(row(r'C:\repo', 'R', 'main'), agent='claude'),
              dict(row(r'C:\repo', 'R', 'main'), agent='codex')]
     d.flag_clashes(mixed)
-    assert 'codex' in mixed[0]['warnings'][0], mixed[0]
-    assert 'claude' in mixed[1]['warnings'][0], mixed[1]
+    assert 'codex' in mixed[0]['warnings'][0][1], mixed[0]
+    assert 'claude' in mixed[1]['warnings'][0][1], mixed[1]
 
     unrelated = [row(r'C:\a', 'R', 'main'), row(r'C:\b', 'R', 'other')]
     d.flag_clashes(unrelated)
@@ -170,6 +172,15 @@ def test_a_card_labels_its_app_and_its_tool_row_once():
     assert page.count('&middot; &mdash;') + page.count('&middot; —') <= 1, \
         'the same clock is printed twice'
     assert 'class="when"' not in page, 'the duplicate clock came back'
+
+    # a collision needs a headline, or the sentence reads as commentary
+    warned = dict(row, warnings=[('same worktree', 'a claude session is here')])
+    page = d.render([('AlgoTrading', [warned])])
+    assert '<span class="warn-head">warning: same worktree</span>' in page, page
+    assert 'a claude session is here' in page, page
+
+    # the footer says whether a summary model actually reached the board
+    assert 'summaries: off' in page, page
 
 
 def test_title_prefers_a_rename_and_falls_back_to_a_full_scan():
@@ -378,6 +389,64 @@ def test_local_summaries_are_optional_and_never_block_the_page():
         assert not d._ASKED, 'an empty turn was sent to the model'
     finally:
         d.SUMMARY_MODEL, d.OLLAMA_URL = '', 'http://127.0.0.1:11434'
+        d._SUMMARIES.clear()
+        d._ASKED.clear()
+
+
+def test_a_small_model_gets_tidied_up_after_itself():
+    """Asking a 1.5B model not to restate the question made it shout and echo
+    the prompt instead, so the tidying is a rule rather than a request."""
+    assert d.clean_summary('This coding session is reading the config') == \
+        'reading the config'
+    assert d.clean_summary('The session aims to fix the parser.') == \
+        'fix the parser'
+    assert d.clean_summary('Coding session focusing on ten questions') == \
+        'ten questions'
+    assert d.clean_summary('It said: Written to') == 'Written to'
+    assert d.clean_summary('SEARCHING FOR A PUBLIC DOC') == \
+        'Searching for a public doc'
+    assert d.clean_summary('  "editing  the board"  ') == 'editing the board'
+    # a line that was already fine must come back untouched
+    assert d.clean_summary('Blocked - safety system prevents force push') == \
+        'Blocked - safety system prevents force push'
+    assert d.clean_summary('') == ''
+
+
+def test_the_models_answer_is_tidied_and_a_dead_model_costs_nothing():
+    """The tidying only helps if the answer actually goes through it, and a
+    model that is missing or down must not break the page."""
+    class Fake:
+        def __init__(self, text):
+            self.text = text
+
+        def read(self):
+            return json.dumps({'response': self.text}).encode('utf-8')
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    real = d.urllib.request.urlopen
+    d.SUMMARY_MODEL = 'test-model'
+    try:
+        d.urllib.request.urlopen = \
+            lambda *a, **k: Fake('THIS CODING SESSION IS READING X')
+        d._fetch_summary('k1', 'said', ['Read a.py'])
+        assert d._SUMMARIES['k1'] == 'Reading x', d._SUMMARIES['k1']
+
+        def dead(*a, **k):
+            raise OSError('connection refused')
+
+        d.urllib.request.urlopen = dead
+        d._ASKED.add('k2')                       # as summarise() would have
+        d._fetch_summary('k2', 'said', [])       # must not raise
+        assert d._SUMMARIES['k2'] == '', d._SUMMARIES['k2']
+        assert 'k2' not in d._ASKED, 'a failed ask was never released'
+    finally:
+        d.urllib.request.urlopen = real
+        d.SUMMARY_MODEL = ''
         d._SUMMARIES.clear()
         d._ASKED.clear()
 
