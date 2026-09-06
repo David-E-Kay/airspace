@@ -245,6 +245,28 @@ def test_trail_keeps_the_subcommand_but_not_the_arguments():
     assert d.short_tool('PowerShell', {'command': '$s = Get-ChildItem C:/x'})         == 'ps Get-ChildItem'
 
 
+def test_git_never_opens_a_console_window():
+    """Started without a console, the board gets a brand new window for every
+    console program it runs - and it runs git every few seconds."""
+    if sys.platform != 'win32':
+        return
+    seen = {}
+    real_run = d.subprocess.run
+
+    def spy(cmd, **kw):
+        seen.update(kw)
+        return real_run(cmd, **kw)
+
+    d.subprocess.run = spy
+    try:
+        branch = d.git(Path(__file__).parent, 'branch', '--show-current')
+    finally:
+        d.subprocess.run = real_run
+
+    assert seen.get('creationflags') == 0x08000000, seen
+    assert branch is not None, 'the spy broke the call it was watching'
+
+
 def test_folders_outside_a_repo_group_by_themselves():
     with tempfile.TemporaryDirectory() as tmp:
         loose = Path(tmp) / 'Scratch Notes'

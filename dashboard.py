@@ -26,6 +26,11 @@ TAIL_BYTES = 64 * 1024
 PORT = 8765
 REFRESH_SECONDS = 10
 
+# Launched from board.cmd there is no console, so Windows hands every console
+# program we start a brand new window of its own. git runs several times a
+# page, every 10 seconds, which spawns windows without end.
+NO_WINDOW = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+
 BROWSERS = [
     r'C:\Program Files\Google\Chrome\Application\chrome.exe',
     r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
@@ -298,6 +303,7 @@ def git(cwd, *args, timeout=15):
         r = subprocess.run(
             ['git', '-C', str(cwd), *args],
             capture_output=True, text=True, timeout=timeout,
+            creationflags=NO_WINDOW,
         )
     except (OSError, subprocess.SubprocessError):
         return None
