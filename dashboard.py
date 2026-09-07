@@ -55,6 +55,13 @@ KEEP_ALIVE = '5m'
 # means the window is shut, and the board has nothing left to serve.
 IDLE_EXIT_SECONDS = 60
 
+# How long a session can be busy without writing anything to its log before
+# the card says so. It is a fact, not a diagnosis: nothing on disk separates
+# "waiting for you to approve a command" from "running a slow one".
+QUIET_MINUTES = 10
+# Uncommitted work becomes worth mentioning once the last commit is this old.
+STALE_COMMIT_MINUTES = 120
+
 # Launched from board.cmd there is no console, so Windows hands every console
 # program we start a brand new window of its own. git runs several times a
 # page, every 10 seconds, which spawns windows without end.
@@ -419,8 +426,13 @@ def read_activity(entries):
                       if any(b.get('type') == 'tool_result' for b in bs)
                       else 'instruction received')
 
+    model = next((e['message'].get('model') for e in reversed(convo)
+                  if e['type'] == 'assistant'
+                  and isinstance(e.get('message'), dict)
+                  and e['message'].get('model')), '')
+
     return {'state': state, 'detail': detail, 'since': since,
-            'trail': trail[-6:], 'last_ts': last_ts,
+            'trail': trail[-6:], 'last_ts': last_ts, 'model': model,
             'says': headline(says, 160)}
 
 
@@ -589,11 +601,14 @@ def read_codex_activity(entries):
     last_ts = next((d['timestamp'] for d in reversed(entries)
                     if d.get('timestamp')), None)
     trail, says, state, detail, since = [], '', 'idle', '', last_ts
+    model = ''
     for d in entries:
         payload = d.get('payload')
         if not isinstance(payload, dict):
             continue
         kind, ts = payload.get('type'), d.get('timestamp')
+        if d.get('type') == 'turn_context' and payload.get('model'):
+            model = str(payload['model'])
         if d.get('type') == 'response_item' and kind in CODEX_CALLS:
             trail.append(codex_call_label(payload))
             detail, since = codex_call_label(payload, 90), ts or since
@@ -614,7 +629,7 @@ def read_codex_activity(entries):
         # Nothing is running, so there is no action to name.
         detail = ''
     return {'state': state, 'detail': detail, 'since': since,
-            'trail': trail[-6:], 'last_ts': last_ts,
+            'trail': trail[-6:], 'last_ts': last_ts, 'model': model,
             'says': headline(says, 160)}
 
 
@@ -625,11 +640,14 @@ def codex_rows(root=CODEX):
         path = codex_rollout(sid, root)
         if path is None:
             continue
-        cwd = codex_meta(path).get('cwd')
+        meta = codex_meta(path)
+        cwd = meta.get('cwd')
         if not cwd:
             continue
         rows.append({
             'agent': 'codex', 'sid': sid, 'cwd': cwd, 'pid': None,
+            'app': pretty_app(meta.get('originator')),
+            'started': meta.get('timestamp'),
             'title': titles.get(sid) or sid[:8],
             **read_codex_activity(tail_entries(path, CODEX_TAIL_BYTES)),
         })
@@ -662,15 +680,20 @@ def git_info(cwd):
         # there is no git here.
         return {'repo': os.path.normcase(os.path.abspath(cwd)),
                 'label': os.path.basename(os.path.abspath(cwd)) or cwd,
-                'branch': '', 'dirty': 0, 'is_main': True}
+                'branch': '', 'dirty': 0, 'is_main': True, 'committed': None}
     root = os.path.dirname(common.rstrip('/\\'))
     status = git(cwd, 'status', '--porcelain') or ''
+    # A repository with no commits yet has no answer here, and 1970 is not it.
+    epoch = git(cwd, 'log', '-1', '--format=%ct')
     return {
         'repo': os.path.normcase(common),
         'label': os.path.basename(root) or root,
         'branch': git(cwd, 'branch', '--show-current') or '(detached)',
         'dirty': len([l for l in status.splitlines() if l.strip()]),
         'is_main': os.path.normcase(os.path.abspath(cwd)) == os.path.normcase(root),
+        # Uncommitted work is only interesting once it is old. This is the
+        # other half of that: when this branch last had anything saved to it.
+        'committed': iso_from_ms(int(epoch) * 1000) if epoch else None,
     }
 
 
@@ -727,6 +750,37 @@ def note_change(sid, state, now=None):
     return bool(changed_at) and now - changed_at < PULSE_SECONDS
 
 
+def pretty_model(name):
+    """Model ids are built for machines. Trim to the part that identifies it.
+
+    ponytail: four rules, no lookup table. An id that matches none of them is
+    shown as it is, which is worse-looking but never wrong.
+    """
+    n = re.sub(r'-\d{8}$', '', str(name or ''))     # drop the date stamp
+    n = re.sub(r'^claude-', '', n)
+    n = re.sub(r'^(opus|sonnet|haiku|fable)-(\d+)-(\d+)$', r'\1 \2.\3', n)
+    n = re.sub(r'^(opus|sonnet|haiku|fable)-(\d+)$', r'\1 \2', n)
+    if n.startswith('gpt'):
+        return 'GPT' + n[3:]
+    return n[:1].upper() + n[1:]
+
+
+def pretty_app(name):
+    """Which window to go and look in. The board cannot open a session, so
+    naming the app it lives in is the next best thing."""
+    n = str(name or '').lower().replace('_', '-')
+    n = re.sub(r'^(claude|codex)[- ]', '', n)
+    return {'': '', 'cli': 'terminal', 'code': 'vs code'}.get(n, n)
+
+
+def iso_from_ms(ms):
+    """Registry timestamps are milliseconds; everything else here is ISO."""
+    try:
+        return datetime.fromtimestamp(float(ms) / 1000, timezone.utc).isoformat()
+    except (TypeError, ValueError, OSError):
+        return None
+
+
 def claude_rows():
     rows = []
     for s in live_sessions():
@@ -735,6 +789,8 @@ def claude_rows():
         rows.append({
             'agent': 'claude', 'sid': s['sessionId'], 'cwd': s['cwd'],
             'pid': s.get('pid'),
+            'app': pretty_app(s.get('entrypoint')),
+            'started': iso_from_ms(s.get('startedAt')),
             'title': (read_title(tpath, entries) or s.get('name')
                       or s['sessionId'][:8]),
             **read_activity(entries),
@@ -799,10 +855,49 @@ def collect():
     groups = {}
     for r in rows:
         groups.setdefault((r['repo'], r['label']), []).append(r)
-    return [
-        (label, sorted(rs, key=lambda r: (not r['is_main'], r['folder'])))
-        for (_, label), rs in sorted(groups.items(), key=lambda kv: kv[0][1].lower())
+    out = [
+        (label, sorted(rs, key=lambda r: (not wants_you(r), not r['is_main'],
+                                          r['folder'])))
+        for (_, label), rs in groups.items()
     ]
+    # The question you actually have when you glance at the board is never
+    # "what is everyone doing", it is "who is waiting on me" - so a project
+    # holding a waiting session sorts to the top, and within it that session
+    # sorts to the front. Alphabetical is the tie-breaker, not the rule.
+    return sorted(out, key=lambda g: (not any(wants_you(r) for r in g[1]),
+                                      g[0].lower()))
+
+
+def wants_you(row):
+    """Whether this session has handed control back and is waiting on you."""
+    return row.get('state') in PULSE_STATES
+
+
+def minutes_since(ts, now=None):
+    """Whole minutes since an ISO timestamp, or None if there isn't one."""
+    if not ts:
+        return None
+    try:
+        when = datetime.fromisoformat(str(ts).replace('Z', '+00:00'))
+    except ValueError:
+        return None
+    now = now or datetime.now(timezone.utc)
+    return max(int((now - when).total_seconds()) // 60, 0)
+
+
+def span(ts):
+    """How long since `ts`, with no "ago" on it - for "open 3h 4m"."""
+    mins = minutes_since(ts)
+    if mins is None:
+        return '—'
+    if mins < 1:
+        return 'under a minute'
+    if mins < 60:
+        return f'{mins}m'
+    # Past a couple of days "245h 17m" stops being a number anyone reads.
+    if mins < 60 * 48:
+        return f'{mins // 60}h {mins % 60}m'
+    return f'{mins // (60 * 24)} days'
 
 
 def ago(ts):
@@ -856,12 +951,22 @@ h2 { font-size:13px; font-weight:600; margin:18px 0 7px; color:#cfd4dc; }
   0%,100% { box-shadow:0 0 0 0 rgba(230,236,255,0); }
   50%     { box-shadow:0 0 0 4px rgba(230,236,255,.30); }
 }
-/* Pinned right, so the eye finds it in the same place on every card. */
+/* Pinned right, so the eye finds it in the same place on every card. Stacked:
+   which agent and which window on top, which model under it. */
 .agent { margin-left:auto; font-size:10px; font-weight:700; letter-spacing:.05em;
-         text-transform:uppercase; padding:1px 7px; border-radius:9px;
-         background:#232936; color:#8b93a1; }
+         text-transform:uppercase; padding:2px 7px; border-radius:9px;
+         background:#232936; color:#8b93a1; text-align:right; line-height:1.35; }
 .agent.claude { background:#2b2119; color:#e0a06a; }
 .agent.codex { background:#16292a; color:#69c6c0; }
+.agent .app { font-weight:400; opacity:.75; }
+.agent .model { display:block; font-weight:400; letter-spacing:0;
+                text-transform:none; opacity:.8; }
+/* The one number most glances at this board were ever after. */
+.triage { margin:0 0 12px; padding:7px 11px; border-radius:6px; font-size:12px;
+          background:#241d10; border:1px solid #4a3a16; color:#f0c674; }
+.age { font-size:11px; color:#6f7684; }
+.state .quiet { font-weight:400; letter-spacing:0; text-transform:none;
+                color:#e3b341; }
 .top { display:flex; align-items:baseline; gap:7px; flex-wrap:wrap; }
 .title { font-weight:600; color:#fff; font-size:13px; margin-bottom:2px;
          white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
@@ -902,9 +1007,24 @@ def render(groups, error=''):
     parts = [
         '<!doctype html><html><head><meta charset="utf-8">',
         f'<meta http-equiv="refresh" content="{REFRESH_SECONDS}">',
-        '<title>Session Board</title>', f'<style>{CSS}</style></head><body>',
+    ]
+    # The count goes in the title so Windows shows it on the taskbar button.
+    # Most glances at this board only ever needed that one number.
+    waiting = [r for _, rows in groups for r in rows if wants_you(r)]
+    parts += [
+        f'<title>{len(waiting)} waiting &middot; Session Board</title>'
+        if waiting else '<title>Session Board</title>',
+        f'<style>{CSS}</style></head><body>',
         '<h1>Live agent sessions</h1>',
     ]
+    if waiting:
+        who = ', '.join(r['title'] for r in waiting[:4])
+        if len(waiting) > 4:
+            who += f' and {len(waiting) - 4} more'
+        parts.append(
+            f'<div class="triage"><b>{len(waiting)} '
+            f'session{"s" if len(waiting) > 1 else ""} waiting on you</b>'
+            f' &middot; {e(who)}</div>')
     # No click-through to a session. The app registers claude:// and the
     # routes exist, but the whole code/ family is gated off in this build -
     # claude://code/new fires and nothing happens. Even if it were on,
@@ -929,17 +1049,39 @@ def render(groups, error=''):
             if r['branch']:
                 parts.append(f'<span class="branch">{e(r["branch"])}</span>')
             if r['dirty']:
-                parts.append(f'<span class="dirty">{r["dirty"]} uncommitted</span>')
+                # Uncommitted files only matter once they have been sitting
+                # there a while, so say when anything was last saved.
+                stale = minutes_since(r.get('committed'))
+                risk = (f' &middot; nothing committed for {span(r["committed"])}'
+                        if stale and stale >= STALE_COMMIT_MINUTES else '')
+                parts.append(f'<span class="dirty">{r["dirty"]} '
+                             f'uncommitted{risk}</span>')
+            if minutes_since(r.get('started')) is not None:
+                parts.append(f'<span class="age">open {span(r["started"])}</span>')
             # The "how long" beside the state says the same thing as a second
             # clock in the corner did, so there is only one now.
-            parts.append(f'<span class="agent {e(agent)}">{e(agent)}</span>')
+            app = f'<span class="app"> &middot; {e(r.get("app") or "")}</span>' \
+                if r.get('app') else ''
+            model = f'<span class="model">{e(pretty_model(r.get("model")))}</span>' \
+                if r.get('model') else ''
+            parts.append(f'<span class="agent {e(agent)}">{e(agent)}{app}'
+                         f'{model}</span>')
             parts.append('</div>')
 
             words = {'working': 'working', 'asking': 'needs your answer',
                      'done': 'done — your turn', 'thinking': 'thinking',
                      'idle': 'no recent activity'}
+            # A busy session that has written nothing for a while. Stated as
+            # the fact it is: the log cannot tell a session parked on a
+            # permission prompt from one running a slow command, and saying
+            # "stuck" would be a guess dressed up as a reading.
+            quiet = minutes_since(r.get('last_ts'))
+            hush = (f'<span class="quiet"> &middot; silent {span(r["last_ts"])}</span>'
+                    if r['state'] in ('working', 'thinking')
+                    and quiet is not None and quiet >= QUIET_MINUTES else '')
             parts.append(f'<div class="state {r["state"]}">{words[r["state"]]}'
-                         f'<span class="dur"> &middot; {e(ago(r["since"]))}</span></div>')
+                         f'<span class="dur"> &middot; {e(ago(r["since"]))}</span>'
+                         f'{hush}</div>')
             if r['detail']:
                 parts.append(f'<div class="detail">{e(r["detail"])}</div>')
             # Both rows are prose about the turn, so each says which it is.

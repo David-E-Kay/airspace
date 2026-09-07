@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import dashboard as d
@@ -746,6 +747,126 @@ def test_the_hook_actually_prints_the_collisions_it_is_given():
 
     assert 'collision check unavailable' in ctx, ctx
     assert 'RuntimeError' in ctx, ctx
+
+
+
+
+def test_model_and_app_names_are_trimmed_to_what_is_readable():
+    """Both go on the card, so an id nobody can read is a bug you see."""
+    assert d.pretty_model('claude-opus-5') == 'Opus 5'
+    assert d.pretty_model('claude-haiku-4-5-20251001') == 'Haiku 4.5'
+    assert d.pretty_model('claude-sonnet-5') == 'Sonnet 5'
+    assert d.pretty_model('gpt-5.4-mini') == 'GPT-5.4-mini'
+    assert d.pretty_model('') == ''
+    # an id matching no rule is shown as it is rather than mangled
+    assert d.pretty_model('something-else-1') == 'Something-else-1'
+
+    assert d.pretty_app('claude-desktop') == 'desktop'
+    assert d.pretty_app('cli') == 'terminal'
+    assert d.pretty_app('Codex Desktop') == 'desktop'
+    assert d.pretty_app('vscode') == 'vscode'
+    assert d.pretty_app(None) == ''
+
+
+def test_the_model_in_use_is_read_from_both_transcript_formats():
+    claude = [
+        {'type': 'assistant', 'timestamp': '2026-09-07T10:00:00Z',
+         'message': {'model': 'claude-opus-5',
+                     'content': [{'type': 'text', 'text': 'hello'}]}},
+    ]
+    assert d.read_activity(claude)['model'] == 'claude-opus-5'
+    # ...and a transcript that never names one must not invent it
+    nameless = [dict(claude[0], message={'content': claude[0]['message']['content']})]
+    assert d.read_activity(nameless)['model'] == ''
+
+    codex = [{'type': 'turn_context', 'timestamp': '2026-09-07T10:00:00Z',
+              'payload': {'model': 'gpt-5.4-mini', 'effort': 'medium'}}]
+    assert d.read_codex_activity(codex)['model'] == 'gpt-5.4-mini'
+
+
+def test_a_busy_session_that_has_gone_quiet_says_so():
+    """The one thing the log can honestly report. It cannot tell a session
+    parked on a permission prompt from one running a slow command, so the
+    card states the silence and leaves the reading to you."""
+    def card(state, minutes):
+        when = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+        return {'agent': 'claude', 'state': state, 'title': 't',
+                'folder': 'f', 'is_main': True, 'branch': 'main', 'dirty': 0,
+                'warnings': [], 'pulse': False, 'detail': '', 'says': '',
+                'trail': [], 'since': when.isoformat(), 'app': '', 'model': '',
+                'started': when.isoformat(), 'committed': None,
+                'last_ts': when.isoformat()}
+
+    loud = d.render([('app', [card('working', d.QUIET_MINUTES - 1)])])
+    assert 'silent' not in loud, 'called a working session quiet too early'
+
+    hushed = d.render([('app', [card('working', d.QUIET_MINUTES + 5)])])
+    assert 'silent' in hushed, hushed
+
+    # a finished session is not "quiet", it is done - the label would be noise
+    ended = d.render([('app', [card('done', d.QUIET_MINUTES + 5)])])
+    assert 'silent' not in ended, ended
+
+
+def test_waiting_sessions_come_first_and_are_counted_in_the_title():
+    """The board is read at a glance, and the glance is always asking the
+    same question: is anything waiting on me?"""
+    def row(state, label, title):
+        return {'agent': 'claude', 'sid': title, 'cwd': '/repos/' + label,
+                'state': state, 'title': title, 'repo': label, 'label': label,
+                'branch': 'main', 'dirty': 0, 'is_main': True, 'folder': label,
+                'warnings': [], 'says': '', 'detail': '', 'trail': [],
+                'since': None, 'last_ts': None, 'app': '', 'model': '',
+                'started': None, 'committed': None, 'pulse': False}
+
+    busy = row('working', 'aaa', 'busy one')
+    idle_ = row('working', 'zzz', 'other busy one')
+    asking = row('asking', 'zzz', 'needs an answer')
+
+    real = d.session_rows
+    try:
+        d.session_rows = lambda: [busy, idle_, asking]
+        groups = d.collect()
+    finally:
+        d.session_rows = real
+
+    # 'zzz' holds the waiting session, so it outranks 'aaa' despite the name
+    assert [g[0] for g in groups] == ['zzz', 'aaa'], groups
+    assert groups[0][1][0]['title'] == 'needs an answer', groups[0][1]
+
+    page = d.render(groups)
+    assert '<title>1 waiting' in page, page[:400]
+    assert 'waiting on you' in page and 'needs an answer' in page
+
+    quiet_page = d.render([('aaa', [busy])])
+    assert '<title>Session Board</title>' in quiet_page, quiet_page[:400]
+    assert 'waiting on you' not in quiet_page
+
+
+def test_old_uncommitted_work_is_called_out_but_fresh_work_is_not():
+    def card(dirty, commit_minutes):
+        when = datetime.now(timezone.utc) - timedelta(minutes=commit_minutes)
+        return {'agent': 'claude', 'state': 'working', 'title': 't',
+                'folder': 'f', 'is_main': True, 'branch': 'main',
+                'dirty': dirty, 'warnings': [], 'pulse': False, 'detail': '',
+                'says': '', 'trail': [], 'since': None, 'app': '', 'model': '',
+                'started': None, 'committed': when.isoformat(), 'last_ts': None}
+
+    old = d.render([('app', [card(3, d.STALE_COMMIT_MINUTES + 30)])])
+    assert 'nothing committed for' in old, old
+    fresh = d.render([('app', [card(3, 5)])])
+    assert 'nothing committed for' not in fresh, fresh
+    # nothing uncommitted, nothing to warn about however old the last commit
+    clean = d.render([('app', [card(0, d.STALE_COMMIT_MINUTES * 10)])])
+    assert 'nothing committed for' not in clean, clean
+
+
+def test_a_long_span_is_reported_in_days():
+    """'245h 17m' is a number nobody reads."""
+    now = datetime.now(timezone.utc)
+    assert d.span((now - timedelta(minutes=90)).isoformat()) == '1h 30m'
+    assert d.span((now - timedelta(days=10)).isoformat()) == '10 days'
+    assert d.span(None) == '—'
 
 
 if __name__ == '__main__':
