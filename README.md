@@ -72,7 +72,9 @@ a question** is holding a task open waiting for your answer; a session that is
 **done** simply finished its turn. Both mean nothing moves until you act,
 which is why they share the strip, but they are not the same thing and the
 strip no longer pretends they are. Questions sort above finished turns, and
-the projects holding them sort above the rest.
+the projects holding them sort above the rest. Each line ends with the agent
+and the app it is running in — `claude / desktop`, `codex / terminal` — so the
+strip alone tells you which window to go to.
 
 The count also goes in the window title, so the taskbar button reads
 "2 waiting" without you opening the board at all.

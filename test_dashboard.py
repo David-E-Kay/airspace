@@ -902,6 +902,27 @@ def test_a_long_span_is_reported_in_days():
     assert d.span(None) == '—'
 
 
+def test_the_strip_names_the_app_each_stopped_session_is_in():
+    """The strip is read instead of the cards, so a line that says a session
+    wants you but not where it lives sends you hunting through windows."""
+    def row(agent, app, title):
+        return {'agent': agent, 'state': 'asking', 'title': title,
+                'folder': 'f', 'is_main': True, 'branch': 'main', 'dirty': 0,
+                'warnings': [], 'pulse': False, 'detail': '', 'says': '',
+                'trail': [], 'since': None, 'last_ts': None, 'app': app,
+                'model': '', 'started': None, 'committed': None}
+
+    page = d.render([('app', [row('claude', 'desktop', 'in the app'),
+                              row('codex', 'terminal', 'in a shell'),
+                              row('claude', '', 'app unknown')])])
+    strip = page.split('<div class="triage">')[1].split('</ul>')[0]
+    lines = strip.split('<li>')[1:]
+    assert 'claude &middot; desktop' in lines[0], lines[0]
+    assert 'codex &middot; terminal' in lines[1], lines[1]
+    # no app on file: the agent alone, never a dangling separator
+    assert 'claude' in lines[2] and '&middot;' not in lines[2], lines[2]
+
+
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_')]
     for t in tests:

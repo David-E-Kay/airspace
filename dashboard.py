@@ -990,6 +990,9 @@ h2 { font-size:13px; font-weight:600; margin:18px 0 7px; color:#cfd4dc; }
              letter-spacing:.06em; text-transform:uppercase; }
 .triage .w.asking { color:#f0c674; }
 .triage .w.done { color:#6fcf7f; }
+.triage .where { margin-left:auto; padding-left:10px; font-size:10px;
+                 letter-spacing:.06em; text-transform:uppercase;
+                 color:#8a8f98; white-space:nowrap; }
 .age { font-size:11px; color:#6f7684; }
 .state .quiet { font-weight:400; letter-spacing:0; text-transform:none;
                 color:#e3b341; }
@@ -1050,8 +1053,13 @@ def render(groups, error=''):
             f'<div class="triage"><b>{len(waiting)} '
             f'session{"s" if len(waiting) > 1 else ""} stopped for you</b><ul>')
         for r in sorted(waiting, key=lambda r: PULSE_STATES.index(r['state'])):
+            # Same agent/app pair the card carries, so the strip alone tells
+            # you which window to go and look in.
+            where = ' &middot; '.join(
+                e(x) for x in (r.get('agent', 'claude'), r.get('app')) if x)
             parts.append(f'<li><span class="w {r["state"]}">'
-                         f'{STATE_WORDS[r["state"]]}</span>{e(r["title"])}</li>')
+                         f'{STATE_WORDS[r["state"]]}</span>{e(r["title"])}'
+                         f'<span class="where">{where}</span></li>')
         parts.append('</ul></div>')
     # No click-through to a session. The app registers claude:// and the
     # routes exist, but the whole code/ family is gated off in this build -
