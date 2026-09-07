@@ -171,3 +171,9 @@ python test_dashboard.py
 Every check was proven able to fail before being trusted: the logic it guards
 was broken on purpose and the check watched to go red. A test that has never
 failed is not a test.
+
+## Changing it
+
+`docs/internals.md` covers how the board is put together and, in particular,
+how to teach it about a coding agent it does not yet know: write one function
+returning rows in a documented shape, and add it to one list.
