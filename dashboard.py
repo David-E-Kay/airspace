@@ -762,15 +762,23 @@ def session_rows():
     return rows
 
 
-def clashes_for(cwd, session_id=''):
+def clashes_for(cwd, session_id='', pid=None):
     """The collisions a session starting in `cwd` is walking into.
 
     At session start its own transcript is empty, so it is not in
     `session_rows` yet - and a lone neighbour would then read as no clash at
     all. A stand-in row goes in for it, and the ordinary rules run over that.
+
+    Two ways to recognise the caller's own row, because the session id alone
+    is not enough. The registry is keyed by pid and is rewritten a few
+    seconds AFTER SessionStart fires, so a session started by clearing the
+    previous one finds the registry still naming its predecessor - same
+    process, same folder, different id. Measured at 8s on 2.1.260. Without
+    the pid rule every cleared session warns about the one it replaced.
     """
     rows = [r for r in session_rows()
-            if not (session_id and r['sid'].startswith(session_id))]
+            if not (session_id and r['sid'].startswith(session_id))
+            and not (pid and r.get('pid') == pid)]
     me = {'sid': session_id or 'me', 'agent': 'claude', 'cwd': cwd,
           'warnings': [], **git_info(cwd)}
     rows.append(me)

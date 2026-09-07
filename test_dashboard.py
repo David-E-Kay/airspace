@@ -629,10 +629,10 @@ def test_a_starting_session_sees_the_collision_it_is_walking_into():
     here = os.path.normcase(os.path.abspath('C:/repos/app'))
     other = os.path.normcase(os.path.abspath('C:/repos/app-wt'))
 
-    def neighbour(cwd, sid='n1', branch='feature'):
+    def neighbour(cwd, sid='n1', branch='feature', pid=None):
         return {'sid': sid, 'agent': 'codex', 'cwd': cwd, 'warnings': [],
-                'repo': 'r', 'label': 'app', 'branch': branch, 'dirty': 0,
-                'is_main': True}
+                'pid': pid, 'repo': 'r', 'label': 'app', 'branch': branch,
+                'dirty': 0, 'is_main': True}
 
     real_rows, real_git = d.session_rows, d.git_info
     try:
@@ -659,6 +659,17 @@ def test_a_starting_session_sees_the_collision_it_is_walking_into():
 
         d.session_rows = lambda: [neighbour(other, branch='other-branch')]
         assert d.clashes_for(here) == [], 'a different branch is not a clash'
+
+        # Clearing a session reuses the process, and the registry - which is
+        # filed under the pid - only catches up seconds after SessionStart.
+        # Until it does, our own entry still names the session we replaced.
+        stale = [neighbour(here, sid='just-cleared', pid=37932)]
+        d.session_rows = lambda: stale
+        assert d.clashes_for(here, 'fresh-sid', pid=37932) == [], \
+            'warned about the session it replaced in its own process'
+        # and the same row in a different process is still a real neighbour
+        heads = [h for h, _ in d.clashes_for(here, 'fresh-sid', pid=99999)]
+        assert heads == ['same worktree'], heads
     finally:
         d.session_rows, d.git_info = real_rows, real_git
 
@@ -703,7 +714,7 @@ def test_the_hook_actually_prints_the_collisions_it_is_given():
 
     real_clashes, real_stdin, real_out = d.clashes_for, sys.stdin, sys.stdout
     try:
-        d.clashes_for = lambda cwd, sid='': [('same branch', 'a codex '
+        d.clashes_for = lambda cwd, sid='', pid=None: [('same branch', 'a codex '
                                               'session saves here too')]
         sys.stdin = io.StringIO(json.dumps({'cwd': os.getcwd(),
                                             'session_id': 'nobody'}))
@@ -719,7 +730,7 @@ def test_the_hook_actually_prints_the_collisions_it_is_given():
 
     # and when the check cannot run at all, silence would read as "nobody
     # else is here" - the one wrong answer that gets work clobbered
-    def broken(cwd, sid=''):
+    def broken(cwd, sid='', pid=None):
         raise RuntimeError('no dashboard')
 
     try:

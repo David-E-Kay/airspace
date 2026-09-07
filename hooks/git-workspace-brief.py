@@ -26,7 +26,7 @@ def git(*args, cwd):
     return out.stdout.strip() if out.returncode == 0 else None
 
 
-def collisions(cwd, session_id):
+def collisions(cwd, session_id, pid=None):
     """Warnings for this folder, and a note if the board's code will not load.
 
     A broken import must cost the collision check, not the whole session
@@ -35,7 +35,7 @@ def collisions(cwd, session_id):
     """
     try:
         import dashboard
-        return dashboard.clashes_for(cwd, session_id or ''), ''
+        return dashboard.clashes_for(cwd, session_id or '', pid), ''
     except Exception as exc:
         return [], ('- collision check unavailable (%s) - dashboard.py could '
                     'not be loaded, so treat "no other session" as unknown'
@@ -70,7 +70,13 @@ def main():
     ]
     if len(trees) > 1:
         lines += [f'    {t}' for t in trees]
-    clashes, unavailable = collisions(cwd, payload.get('session_id'))
+    # Claude hands every child this; it is the key the session registry is
+    # filed under, and the only way to tell our own stale entry from a
+    # genuine neighbour in the seconds before the registry catches up.
+    own_pid = os.environ.get('CLAUDE_PID', '')
+    clashes, unavailable = collisions(
+        cwd, payload.get('session_id'),
+        int(own_pid) if own_pid.isdigit() else None)
     if unavailable:
         lines.append(unavailable)
     for head_word, body in clashes:
