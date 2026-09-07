@@ -66,10 +66,16 @@ long the session has been open. If files have been sitting uncommitted while
 nothing has been saved to that branch for over two hours, the chip says so —
 that is the state where a crash or a careless branch switch costs you work.
 
-At the very top of the page, a strip counts the sessions waiting on you and
-names them, and the projects holding them sort above the rest. The same count
-goes in the window title, so the taskbar button reads "2 waiting" without you
-opening the board at all.
+At the very top of the page, a strip lists every session that has stopped —
+one per line, each saying which kind of stopped it is. A session that **asked
+a question** is holding a task open waiting for your answer; a session that is
+**done** simply finished its turn. Both mean nothing moves until you act,
+which is why they share the strip, but they are not the same thing and the
+strip no longer pretends they are. Questions sort above finished turns, and
+the projects holding them sort above the rest.
+
+The count also goes in the window title, so the taskbar button reads
+"2 waiting" without you opening the board at all.
 
 A **red card** is a collision, with one of two warnings:
 

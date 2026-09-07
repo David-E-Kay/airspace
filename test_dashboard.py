@@ -836,11 +836,44 @@ def test_waiting_sessions_come_first_and_are_counted_in_the_title():
 
     page = d.render(groups)
     assert '<title>1 waiting' in page, page[:400]
-    assert 'waiting on you' in page and 'needs an answer' in page
+    assert 'stopped for you' in page and 'needs an answer' in page
 
     quiet_page = d.render([('aaa', [busy])])
     assert '<title>Session Board</title>' in quiet_page, quiet_page[:400]
-    assert 'waiting on you' not in quiet_page
+    assert 'stopped for you' not in quiet_page
+
+
+def test_the_strip_says_which_kind_of_stopped_each_session_is():
+    """A session that asked a question and one that simply finished its turn
+    both stop the work, but they are not the same thing and the strip used to
+    call both of them "waiting on you" - which read as a question nobody had
+    asked. Each line now says which, and the question sorts above the rest."""
+    def row(state, title):
+        return {'agent': 'claude', 'state': state, 'title': title,
+                'folder': 'f', 'is_main': True, 'branch': 'main', 'dirty': 0,
+                'warnings': [], 'pulse': False, 'detail': '', 'says': '',
+                'trail': [], 'since': None, 'last_ts': None, 'app': '',
+                'model': '', 'started': None, 'committed': None}
+
+    page = d.render([('app', [row('done', 'finished a turn'),
+                              row('asking', 'asked a question'),
+                              row('working', 'still going')])])
+
+    assert '2 sessions stopped for you' in page, page[:600]
+    # the working session is not in the strip at all
+    strip = page.split('<div class="triage">')[1].split('</div>')[0]
+    assert 'still going' not in strip, strip
+    # each line carries its own label, and the question comes first
+    assert strip.index('needs your answer') < strip.index('done'), strip
+    assert strip.index('asked a question') < strip.index('finished a turn'), strip
+    # one line each, not a comma-separated run
+    assert strip.count('<li>') == 2, strip
+
+    # a lone finished session is never described as having asked anything
+    alone = d.render([('app', [row('done', 'finished a turn')])])
+    solo = alone.split('<div class="triage">')[1].split('</ul>')[0]
+    assert '1 session stopped for you' in solo, solo
+    assert 'needs your answer' not in solo, solo
 
 
 def test_old_uncommitted_work_is_called_out_but_fresh_work_is_not():

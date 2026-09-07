@@ -40,6 +40,16 @@ REFRESH_SECONDS = 10
 PULSE_SECONDS = 25
 PULSE_STATES = ('asking', 'done')
 
+# Both of these mean the session has stopped and nothing moves until you act,
+# which is why they share the strip at the top of the page. They are not the
+# same thing, though: `asking` is a turn held open mid-task waiting for an
+# answer, `done` is a turn that finished. Listed in this order, most blocked
+# first, and each one says which it is - the strip used to call both of them
+# "waiting on you", which read as a question that was never asked.
+STATE_WORDS = {'working': 'working', 'asking': 'needs your answer',
+               'done': 'done — your turn', 'thinking': 'thinking',
+               'idle': 'no recent activity'}
+
 # Optional one-line summaries from a local model, off unless
 # BOARD_SUMMARY_MODEL names one - the board has to work on a machine with no
 # graphics card at all. On 2GB of spare memory, `qwen2.5:1.5b-instruct` fits
@@ -856,21 +866,29 @@ def collect():
     for r in rows:
         groups.setdefault((r['repo'], r['label']), []).append(r)
     out = [
-        (label, sorted(rs, key=lambda r: (not wants_you(r), not r['is_main'],
+        (label, sorted(rs, key=lambda r: (urgency(r), not r['is_main'],
                                           r['folder'])))
         for (_, label), rs in groups.items()
     ]
     # The question you actually have when you glance at the board is never
-    # "what is everyone doing", it is "who is waiting on me" - so a project
-    # holding a waiting session sorts to the top, and within it that session
+    # "what is everyone doing", it is "what has stopped for me" - so a project
+    # holding a stopped session sorts to the top, and within it that session
     # sorts to the front. Alphabetical is the tie-breaker, not the rule.
-    return sorted(out, key=lambda g: (not any(wants_you(r) for r in g[1]),
+    return sorted(out, key=lambda g: (min(urgency(r) for r in g[1]),
                                       g[0].lower()))
 
 
 def wants_you(row):
-    """Whether this session has handed control back and is waiting on you."""
+    """Whether this session has stopped and nothing moves until you act."""
     return row.get('state') in PULSE_STATES
+
+
+def urgency(row):
+    """Sort key. A question held open mid-task outranks a finished turn,
+    which outranks everything still running."""
+    state = row.get('state')
+    return (PULSE_STATES.index(state) if state in PULSE_STATES
+            else len(PULSE_STATES))
 
 
 def minutes_since(ts, now=None):
@@ -962,8 +980,16 @@ h2 { font-size:13px; font-weight:600; margin:18px 0 7px; color:#cfd4dc; }
 .agent .model { display:block; font-weight:400; letter-spacing:0;
                 text-transform:none; opacity:.8; }
 /* The one number most glances at this board were ever after. */
-.triage { margin:0 0 12px; padding:7px 11px; border-radius:6px; font-size:12px;
+.triage { margin:0 0 12px; padding:8px 12px; border-radius:6px; font-size:12px;
           background:#241d10; border:1px solid #4a3a16; color:#f0c674; }
+.triage ul { list-style:none; margin:6px 0 0; padding:0; }
+.triage li { display:flex; gap:9px; align-items:baseline; padding:2px 0;
+             color:#e6e6e6; }
+/* Fixed width, so the titles line up and the labels read as a column. */
+.triage .w { flex:0 0 auto; width:130px; font-size:10px; font-weight:700;
+             letter-spacing:.06em; text-transform:uppercase; }
+.triage .w.asking { color:#f0c674; }
+.triage .w.done { color:#6fcf7f; }
 .age { font-size:11px; color:#6f7684; }
 .state .quiet { font-weight:400; letter-spacing:0; text-transform:none;
                 color:#e3b341; }
@@ -1018,13 +1044,15 @@ def render(groups, error=''):
         '<h1>Live agent sessions</h1>',
     ]
     if waiting:
-        who = ', '.join(r['title'] for r in waiting[:4])
-        if len(waiting) > 4:
-            who += f' and {len(waiting) - 4} more'
+        # One per line. A comma-separated run of session titles is a wall of
+        # words, and this strip only earns its place if it reads at a glance.
         parts.append(
             f'<div class="triage"><b>{len(waiting)} '
-            f'session{"s" if len(waiting) > 1 else ""} waiting on you</b>'
-            f' &middot; {e(who)}</div>')
+            f'session{"s" if len(waiting) > 1 else ""} stopped for you</b><ul>')
+        for r in sorted(waiting, key=lambda r: PULSE_STATES.index(r['state'])):
+            parts.append(f'<li><span class="w {r["state"]}">'
+                         f'{STATE_WORDS[r["state"]]}</span>{e(r["title"])}</li>')
+        parts.append('</ul></div>')
     # No click-through to a session. The app registers claude:// and the
     # routes exist, but the whole code/ family is gated off in this build -
     # claude://code/new fires and nothing happens. Even if it were on,
@@ -1068,9 +1096,7 @@ def render(groups, error=''):
                          f'{model}</span>')
             parts.append('</div>')
 
-            words = {'working': 'working', 'asking': 'needs your answer',
-                     'done': 'done — your turn', 'thinking': 'thinking',
-                     'idle': 'no recent activity'}
+            words = STATE_WORDS
             # A busy session that has written nothing for a while. Stated as
             # the fact it is: the log cannot tell a session parked on a
             # permission prompt from one running a slow command, and saying
