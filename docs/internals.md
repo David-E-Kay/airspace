@@ -44,21 +44,31 @@ Filled in by the harness adapter:
 | `cwd` | absolute working directory. Everything else keys off this. |
 | `pid` | process id, or `None` if the harness does not expose one |
 | `title` | what to call this session on the card |
+| `app` | which window it is running in, e.g. `desktop`, `terminal`. `''` if unknown. |
+| `started` | ISO timestamp the session opened, for the "open 3h" chip |
 | `state` | one of `working`, `thinking`, `asking`, `done` |
 | `detail` | the action in progress, e.g. `editing timer.py`. Empty when the turn has ended. |
 | `says` | the last thing the agent said, one line |
 | `trail` | up to six recent tool calls, oldest first |
 | `since` | ISO timestamp the current state began |
-| `last_ts` | ISO timestamp of the last entry seen |
+| `last_ts` | ISO timestamp of the last entry seen. Also drives the "silent 14m" note. |
+| `model` | raw model id; `pretty_model()` trims it for display |
 
 Added afterwards by `session_rows()`, so an adapter must not set them:
-`repo`, `label`, `branch`, `dirty`, `is_main` (all from `git_info()`),
+`repo`, `label`, `branch`, `dirty`, `is_main`, `committed` (all from
+`git_info()`),
 `folder`, and an empty `warnings` list. `collect()` later adds `pulse` (the
 glow) and `summary` (the optional local-model line).
 
 `read_activity()` and `read_codex_activity()` both return the `state` / `detail`
-/ `says` / `trail` / `since` / `last_ts` block, so an adapter usually ends with
-`**your_read_activity(...)` and never spells those keys out.
+/ `says` / `trail` / `since` / `last_ts` / `model` block, so an adapter usually
+ends with `**your_read_activity(...)` and never spells those keys out.
+
+Two of these are worth a warning. `app` should be the window a person would go
+and open, not an internal channel name — `pretty_app()` exists to trim the ids
+each harness happens to use. And `model` must be whatever the harness actually
+last ran with, read from the log rather than from configuration, or the card
+will confidently show a model the session is not using.
 
 ## Adding a harness
 

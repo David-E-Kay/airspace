@@ -57,7 +57,19 @@ Under the state are up to three rows: the action it is on, **turn summary**
 (the local model's read of the turn, if summaries are on) and **last message**
 (what the session actually wrote).
 
-The **right edge** and the corner tag say which app it is — Claude or Codex.
+The **right edge** names the agent, the app it is running in, and the model
+underneath — "claude / desktop / Opus 5". The board cannot open a session for
+you, so telling you which window to go and find it in is the next best thing.
+
+Along the top of a card: the branch, how many files are uncommitted, and how
+long the session has been open. If files have been sitting uncommitted while
+nothing has been saved to that branch for over two hours, the chip says so —
+that is the state where a crash or a careless branch switch costs you work.
+
+At the very top of the page, a strip counts the sessions waiting on you and
+names them, and the projects holding them sort above the rest. The same count
+goes in the window title, so the taskbar button reads "2 waiting" without you
+opening the board at all.
 
 A **red card** is a collision, with one of two warnings:
 
@@ -72,6 +84,12 @@ A session parked on a permission prompt reads as `working`. The transcript
 records the tool call whether or not you have approved it yet, so there is
 nothing to tell them apart without writing into the session, which this board
 deliberately does not do.
+
+What the board *can* say is that a busy session has written nothing for a
+while: after ten minutes a working card reads "silent 14m". That is a fact,
+not a diagnosis. It is equally consistent with a session waiting for you to
+approve a command and one running a slow test suite, and the card does not
+pretend to know which.
 
 There is no click-through to a session. Claude registers a `claude://` handler
 and the routes exist, but the whole `code/` family is gated off in this build.
