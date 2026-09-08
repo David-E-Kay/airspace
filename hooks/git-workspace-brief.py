@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """SessionStart hook: report where this session is about to do its work.
 
-Facts only. The decision rule lives in ~/.claude/CLAUDE.md section 8 - this
-just makes sure the model never has to go looking for the state.
+Facts only. It does not decide anything; it just makes sure the model never
+has to go looking for the state before it starts editing.
 
 Collisions come from dashboard.py, the same code the board renders, so the
 hook and the board can never disagree. That replaced a recency heuristic over
@@ -83,13 +83,12 @@ def main():
         lines.append(
             f'- WARNING: {head_word.upper()} - {body}. Re-check '
             '`git worktree list` and the current branch before any checkout, '
-            'merge, or commit, and raise a worktree with David before '
-            'switching branches.'
+            'merge, or commit, and offer a separate worktree rather than '
+            'switching branches under the other session.'
         )
     lines.append(
-        'Apply CLAUDE.md section 8 before the first file change: say where '
-        'this work should live (trunk / new branch / new worktree) and why, '
-        'in plain language.'
+        'Before the first file change, say where this work should live '
+        '(trunk / new branch / new worktree) and why.'
     )
 
     print(json.dumps({

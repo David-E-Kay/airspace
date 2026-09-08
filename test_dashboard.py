@@ -17,9 +17,9 @@ import dashboard as d
 
 def test_slug_matches_claude_layout():
     """The slug rule must match the directory names Claude actually creates."""
-    assert d.slug_for(r'C:\Users\david\repos\Multi Agent Dashboard') == \
-        'C--Users-david-repos-Multi-Agent-Dashboard'
-    assert d.slug_for(r'C:\Users\david\.claude') == 'C--Users-david--claude'
+    assert d.slug_for(r'C:\Users\dev\repos\Multi Agent Dashboard') == \
+        'C--Users-dev-repos-Multi-Agent-Dashboard'
+    assert d.slug_for(r'C:\Users\dev\.claude') == 'C--Users-dev--claude'
     # every non-alphanumeric becomes a dash, underscores and dots included
     assert d.slug_for(r'C:\a_b.c-d') == 'C--a-b-c-d'
 
@@ -696,7 +696,7 @@ def test_the_session_start_hook_runs_and_reports_the_workspace():
     assert 'GIT WORKSPACE' in ctx, ctx
     assert 'trunk: main' in ctx, ctx
     assert 'worktrees' in ctx, ctx
-    assert 'CLAUDE.md section 8' in ctx, ctx
+    assert 'trunk / new branch / new worktree' in ctx, ctx
     # a fresh empty repo has nobody else in it
     assert 'WARNING' not in ctx, ctx
     # ...and "nobody else" must mean nobody, not a failed import

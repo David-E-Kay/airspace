@@ -17,10 +17,19 @@ Two pieces, one detector between them:
 Both call `session_rows()` and `flag_clashes()` in `dashboard.py`, so the
 page and the hook can never disagree about who is running.
 
+## What you need
+
+Windows, Python 3, and Claude Code or Codex already installed. No packages,
+no install step - the board is one file of standard library.
+
+Liveness is proved rather than guessed, and both proofs are Windows ones: a
+process creation time for Claude, an open file handle for Codex. macOS and
+Linux fall back to weaker checks that have never been run in anger, so treat
+this as a Windows tool until somebody reports otherwise.
+
 ## Running the board
 
-Double-click the **Session Board** icon on the Desktop, or `board.cmd` in this
-folder, or:
+Double-click `board.cmd`, or:
 
 ```
 python dashboard.py
@@ -29,14 +38,12 @@ python dashboard.py
 Close the window and the board stops about a minute later, giving back the
 memory it was using.
 
-If the Desktop icon is ever lost: right-click `board.cmd`, **Show more
-options**, **Send to**, **Desktop (create shortcut)**.
+For a Desktop icon: right-click `board.cmd`, **Show more options**,
+**Send to**, **Desktop (create shortcut)**.
 
 It opens at <http://127.0.0.1:8765>. Use the numeric address rather than
 `localhost` — the server is IPv4-only and Windows tries IPv6 first, which
 costs about two seconds a page.
-
-Stdlib only. No install step, no dependencies.
 
 ## Reading a card
 
@@ -99,8 +106,19 @@ not a diagnosis. It is equally consistent with a session waiting for you to
 approve a command and one running a slow test suite, and the card does not
 pretend to know which.
 
-There is no click-through to a session. Claude registers a `claude://` handler
-and the routes exist, but the whole `code/` family is gated off in this build.
+There is no click-through to a session, and it is not for want of a way to
+address one. The Claude desktop app registers a `claude://` handler with
+exactly the right routes - `code/continue?session=<id>`, and even
+`code/needs-input`, described inside the app as "open the session that has
+waited longest for a permission answer". The board can work out the id those
+routes want, too: the app writes one JSON file per session under
+`%APPDATA%\Claude\claude-code-sessions\`, and each file carries both that id
+and the `cliSessionId` the board already has.
+
+What is missing is permission. The routes sit behind a server-side feature
+flag that is off, and the environment override that would force it on is
+ignored in released builds. The wiring is all there; the switch is not ours.
+`docs/internals.md` records what the change would be the day it flips.
 
 ## Optional: one-line summaries from a local model
 

@@ -143,6 +143,32 @@ finds its own registry entry still naming its predecessor — same process, same
 folder, different session id. Without the pid rule every cleared session opens
 by warning about the session it replaced.
 
+## Click-through, if the flag ever flips
+
+Opening a session from the board is one small change away, and the missing
+piece is not ours to supply.
+
+The desktop app writes one record per session to
+`%APPDATA%/Claude/claude-code-sessions/<a>/<b>/local_<uuid>.json`. Each holds
+`sessionId` (the `local_...` form the deep link expects) alongside
+`cliSessionId`, which is the uuid already used as the transcript filename and
+in the process registry. Glob the tree once, build the reverse map, and every
+row can carry the id the app answers to. The files also carry the app's own
+`title`, `model`, `effort` and `permissionMode` - none of which are in a
+transcript.
+
+The routes are `claude://code/continue?session=<local id>` and
+`claude://code/needs-input`, the second described in the bundle as opening the
+session that has waited longest for a permission answer. Both are guarded by a
+server-side feature gate that is currently off for this account. The bundle's
+own override, `CLAUDE_DEV_FORCE_GATES`, returns an empty set when
+`app.isPackaged` is true, so a released build cannot be talked into it locally.
+Verified on app 1.46388.4.0 with CLI 2.1.260 on 2026-09-08; firing the link
+changed nothing, including the record's own `lastFocusedAt`.
+
+So: do not build the link until a fired deep link is observed to work. A link
+that silently does nothing is worse than no link.
+
 ## Things that are deliberately absent
 
 - **Subagent internals.** Nothing on disk records them. Only the launch and the
