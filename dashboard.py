@@ -32,6 +32,18 @@ TAIL_BYTES = 64 * 1024
 # window can fall behind.
 CODEX_TAIL_BYTES = 256 * 1024
 PORT = 8765
+# assets/icon.ico is the same drawing; assets/make_icon.py regenerates it.
+FAVICON = (
+    "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' "
+    "viewBox='0 0 256 256'>"
+    "<rect width='256' height='256' rx='56' fill='%2315171c'/>"
+    "<path d='M128 128 L128 42 A86 86 0 0 1 189 67 Z' fill='%23716141'/>"
+    "<circle cx='128' cy='128' r='88' fill='none' stroke='%2331353f' "
+    "stroke-width='13'/>"
+    "<line x1='128' y1='128' x2='128' y2='42' stroke='%23f0c674' "
+    "stroke-width='13' stroke-linecap='round'/>"
+    "<circle cx='172' cy='94' r='19' fill='%23f0c674'/></svg>"
+)
 REFRESH_SECONDS = 10
 # How long a card keeps glowing after its state changed. Two refreshes, so a
 # change cannot slip past between glances. Only a change into a state that
@@ -1036,6 +1048,10 @@ def render(groups, error=''):
     parts = [
         '<!doctype html><html><head><meta charset="utf-8">',
         f'<meta http-equiv="refresh" content="{REFRESH_SECONDS}">',
+        # The tab icon, inline so the board still serves one file and
+        # needs no second request. Simplified like the small .ico:
+        # one ring, the sweep, one contact.
+        f'<link rel="icon" href="{FAVICON}">',
     ]
     # The count goes in the title so Windows shows it on the taskbar button.
     # Most glances at this board only ever needed that one number.

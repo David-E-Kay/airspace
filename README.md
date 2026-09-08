@@ -1,5 +1,7 @@
 # Multi-agent session toolkit
 
+<img src="assets/icon-256.png" alt="" width="88" align="right">
+
 Support for running several Claude Code and Codex sessions at once without
 them treading on each other.
 
@@ -39,7 +41,8 @@ Close the window and the board stops about a minute later, giving back the
 memory it was using.
 
 For a Desktop icon: right-click `board.cmd`, **Show more options**,
-**Send to**, **Desktop (create shortcut)**.
+**Send to**, **Desktop (create shortcut)**. Then right-click the shortcut,
+**Properties**, **Change Icon**, and point it at `assets/icon.ico`.
 
 It opens at <http://127.0.0.1:8765>. Use the numeric address rather than
 `localhost` — the server is IPv4-only and Windows tries IPv6 first, which
@@ -205,6 +208,21 @@ genuinely running.
 If `dashboard.py` cannot be loaded, the brief says so out loud rather than
 reporting no collisions. Silence would read as "nobody else is here", which
 is the one wrong answer that costs you work.
+
+## The screenshot
+
+`assets/demo_board.py` renders the real page from invented sessions and
+writes `assets/demo.html`. Screenshot that rather than a live board - a live
+one is full of whatever you happen to be working on. Re-run it after changing
+the page, so the picture stops being a lie.
+
+```
+python assets/demo_board.py
+```
+
+`assets/make_icon.py` does the same job for the icon: it is where `icon.ico`
+and `icon-256.png` come from. Both scripts need Pillow. The board itself does
+not - nothing in `dashboard.py` imports anything outside the standard library.
 
 ## Tests
 
