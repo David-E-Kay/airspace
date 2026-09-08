@@ -123,6 +123,34 @@ flag that is off, and the environment override that would force it on is
 ignored in released builds. The wiring is all there; the switch is not ours.
 `docs/internals.md` records what the change would be the day it flips.
 
+## This is not a harness, and that is the whole trade
+
+There is a second kind of tool in this space, and it is worth knowing which
+one you want. Products like [AgentsRoom](https://agentsroom.dev/) and
+[herdr](https://github.com/herdrdev/herdr) *start* the agents themselves:
+they launch the real CLI inside a terminal they own, so they can read what is
+drawn on that terminal and type back into it.
+
+That buys them things this board will never do. They can tell a session parked
+on a permission prompt from one running a slow test, because the prompt is
+visible on screen. They can answer it for you. They can spawn a new agent, kill
+one, or point three different agents at three parts of the same repository.
+
+The price is that they have to have launched it. A session you started some
+other way - the Claude desktop app, a terminal you opened yourself, an IDE
+extension - is not theirs, so it does not appear.
+
+This board is the other trade. It launches nothing and owns nothing. It reads
+the files Claude Code and Codex already write about themselves, which means it
+sees every session on the machine no matter how it was started, and it cannot
+break one, because there is nothing for it to break. It also cannot help you:
+no answering a prompt, no starting a session, no stopping one.
+
+Pick by what you actually need. If you want to drive several agents from one
+window, use a harness. If you want to know what is already running - including
+the sessions a harness cannot see - use this. They are not competitors; they
+answer different questions, and running both is reasonable.
+
 ## Optional: one-line summaries from a local model
 
 The line on each card is picked out of what the session wrote — first line,
