@@ -2,9 +2,23 @@
 
     python assets/demo_board.py
 
-Open the file it writes and screenshot that for the README, rather than a
-real board - a real one is full of whatever you happen to be working on.
-Re-run it whenever the page changes so the screenshot stops being a lie.
+Shoot the file it writes for the README, rather than a real board - a real one
+is full of whatever you happen to be working on. Re-run it whenever the page
+changes so the screenshot stops being a lie.
+
+Then capture it, from the repo root:
+
+    chrome --headless=new --hide-scrollbars --force-device-scale-factor=2 ^
+           --window-size=900,1206 --screenshot=assets\\screenshot.png ^
+           "file:///C:/full/path/to/assets/demo.html"
+
+Both numbers matter. 900 CSS pixels at a scale factor of 2 gives an 1800px
+image whose text is still legible after GitHub scales it into the README
+column; capturing at a native ~1800px window does not, which is how the first
+screenshot ended up unreadable. 1206 is the page's full height at that width -
+headless Chrome captures the window, not the document, so a short window
+silently crops. Re-measure with document.documentElement.scrollHeight whenever
+this file gains a card.
 """
 import io
 import os
