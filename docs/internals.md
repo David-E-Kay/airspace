@@ -186,3 +186,33 @@ seconds per page while the network stack tries IPv6 first and gives up.
 Editing `dashboard.py` with a search-and-replace script whose anchor text
 contains a backslash tends to fail silently, because the backslash is consumed
 somewhere on the way. Anchor on a fragment without one.
+
+## Regenerating the README screenshot and the icon
+
+`assets/demo_board.py` renders the real page from invented sessions and writes
+`assets/demo.html`. Shoot that rather than a live board — a live one is full of
+whatever you happen to be working on. Re-run it after changing the page, so the
+picture stops being a lie.
+
+```
+python assets/demo_board.py
+chrome --headless=new --hide-scrollbars --force-device-scale-factor=2 ^
+       --window-size=900,1206 --screenshot=assets\screenshot.png ^
+       "file:///C:/path/to/assets/demo.html"
+```
+
+The two numbers are the point. **900 CSS pixels wide at a scale factor of 2**
+produces an 1800px image whose text is still legible after GitHub scales it
+down to the README column; capturing at a native window width of ~1800 does
+not, and that is how the first screenshot ended up unreadable. **1206** is the
+page's full height at that width — headless Chrome captures the window, not the
+document, so a short window silently crops. Re-measure with
+`document.documentElement.scrollHeight` whenever the demo gains a card.
+
+`demo_board.py` sets `BOARD_SUMMARY_MODEL` before importing `dashboard`,
+because its invented rows carry summary lines and the footer would otherwise
+say summaries were off.
+
+`assets/make_icon.py` produces `icon.ico` and `icon-256.png`. Both scripts need
+Pillow. The board itself does not — nothing in `dashboard.py` imports anything
+outside the standard library.

@@ -11,6 +11,9 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# The invented rows below carry summary lines, so the footer has to name a
+# model or the screenshot contradicts itself. Read at import time.
+os.environ.setdefault('BOARD_SUMMARY_MODEL', 'qwen2.5:1.5b-instruct')
 import dashboard as d  # noqa: E402
 
 now = datetime.now(timezone.utc)
