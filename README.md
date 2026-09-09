@@ -5,6 +5,9 @@
 Support for running several Claude Code and Codex sessions at once without
 them treading on each other.
 
+![The board: a card per live session, showing what each one is doing and
+whether it is waiting for you](assets/screenshot.png)
+
 ## Why it exists
 
 I am not a software engineer, and I work in the desktop apps rather than a
@@ -258,8 +261,9 @@ is the one wrong answer that costs you work.
 
 `assets/demo_board.py` renders the real page from invented sessions and
 writes `assets/demo.html`. Screenshot that rather than a live board - a live
-one is full of whatever you happen to be working on. Re-run it after changing
-the page, so the picture stops being a lie.
+one is full of whatever you happen to be working on. The shot at the top of
+this page is `assets/screenshot.png`; replace it after changing the page, so
+the picture stops being a lie.
 
 ```
 python assets/demo_board.py
