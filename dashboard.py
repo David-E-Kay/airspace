@@ -38,7 +38,7 @@ FAVICON = (
     "viewBox='0 0 256 256'>"
     "<rect width='256' height='256' rx='56' fill='%2315171c'/>"
     "<path d='M128 128 L128 42 A86 86 0 0 1 189 67 Z' fill='%23716141'/>"
-    "<circle cx='128' cy='128' r='88' fill='none' stroke='%2331353f' "
+    "<circle cx='128' cy='128' r='88' fill='none' stroke='%2334b3a6' "
     "stroke-width='13'/>"
     "<line x1='128' y1='128' x2='128' y2='42' stroke='%23f0c674' "
     "stroke-width='13' stroke-linecap='round'/>"

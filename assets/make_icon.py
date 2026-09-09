@@ -11,7 +11,10 @@ from PIL import Image, ImageDraw
 
 S = 1024          # draw big, downscale for smooth edges
 BG = (21, 23, 28, 255)
-RING = (49, 53, 63, 255)
+# Teal, not the near-black the rings started as: on a dark tile they read
+# as scratches rather than a radar. Bright enough to carry, dim enough
+# that the amber contact still wins the eye.
+RING = (52, 179, 166, 255)
 AMBER = (240, 198, 116, 255)
 GREY = (107, 114, 128, 255)
 WEDGE = tuple(round(b + 0.42 * (a - b)) for b, a in
