@@ -58,10 +58,8 @@ can never disagree about who is running.
 **Windows**, Python 3, and Claude Code or Codex already installed. No packages,
 no install step — the board is one file of standard library.
 
-Windows is not incidental. Proving that a session is genuinely still running,
-rather than guessing from a file that was touched recently, is done differently
-on every operating system, and only the Windows way is tested. macOS and Linux
-have fallbacks that nobody has exercised.
+This was developed using Windows installs of Codex and Claude Code. Other
+operating systems may store session files differently and have not been tested.
 
 ## Running the board
 
