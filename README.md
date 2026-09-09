@@ -5,6 +5,23 @@
 Support for running several Claude Code and Codex sessions at once without
 them treading on each other.
 
+## Why it exists
+
+I am not a software engineer, and I work in the desktop apps rather than a
+terminal, because the desktop apps have got good and I would rather click than
+type commands I do not fully understand. That one preference is the whole
+reason this exists.
+
+Working that way, I end up with sessions open across several projects at once,
+jumping between them. Two things kept going wrong. I lost track of which
+session had stopped and was waiting for me. And more than once I forgot to
+start a new branch or a separate folder first, so two sessions ended up editing
+the same files, and whichever saved last quietly won.
+
+Every tool that solves this properly wants to launch the agent for you, in a
+terminal it controls. That is the one thing I was avoiding. So this watches
+instead, from outside, and works with the apps I already use.
+
 Read-only throughout. It reads the files those apps already write about
 themselves and asks git about each folder. It never writes to a session,
 starts anything, or plans work.
