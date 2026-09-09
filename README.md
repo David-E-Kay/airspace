@@ -2,20 +2,38 @@
 
 <img src="assets/icon-256.png" alt="" width="88" align="right">
 
-One page showing every Claude Code and Codex session running on your machine:
-what each one is doing, which are waiting on you, and where two of them are
-about to overwrite each other's work.
+![Windows](https://img.shields.io/badge/platform-Windows-0078D4?logo=windows&logoColor=white)
+![Python 3](https://img.shields.io/badge/python-3-3776AB?logo=python&logoColor=white)
+![No dependencies](https://img.shields.io/badge/dependencies-none-2ea44f)
+
+Two small tools for anyone running several Claude Code and Codex sessions at
+once. **The board** shows what every live session is doing and which ones have
+stopped and are waiting on you. **The session-start hook** warns a new session,
+at the moment it opens, that another session is already working in the same
+place.
+
+One answers *what is happening right now*. The other answers *is it safe to
+start work here* — before the damage rather than after.
 
 ![One card per live session, under a strip listing the sessions waiting on a reply](assets/screenshot.png)
 
 ## Why it exists
 
-Running several coding agents at once is now ordinary. Keeping track of them
-is not. Two failures dominate.
+Running several coding agents at once is now ordinary. Keeping track of them is
+not. Two things go wrong, and they need different answers.
 
-A session finishes, or stops to ask a question, and nobody notices for twenty
-minutes. And two sessions end up pointed at the same folder, or the same
-branch, so whichever saves last quietly wins.
+**A session stops and nobody notices.** It finishes its turn, or pauses to ask
+a question, then sits there for twenty minutes while you work in another
+window. The board answers this: every stopped session is listed at the top of
+the page, and the count goes in the page title, so the taskbar button reads
+"2 waiting" without the board even being open.
+
+**Two sessions end up in the same place.** The same folder, or the same branch,
+and whichever saves last quietly wins. Spotting that afterwards is no use — the
+work is already gone. So the hook runs at the front of every new Claude Code
+session and says, before a single file is touched, that somebody else is
+already there. The board flags the same collisions in red for sessions that are
+already running.
 
 Every tool that solves this properly wants to launch the agents itself, inside
 a terminal it controls. The desktop apps have matured to the point where the
@@ -30,24 +48,20 @@ The design assumes an operator rather than an engineer — someone directing
 several agents across several repositories, who needs to know which one wants
 them next, and who would rather click than type.
 
-Two pieces, one detector between them:
-
-- **The board** (`dashboard.py`) — the page above, refreshing itself.
-- **The session-start hook** (`hooks/git-workspace-brief.py`) — tells a
-  starting session where it is and who else is already there.
-
-Both call `session_rows()` and `flag_clashes()` in `dashboard.py`, so the page
-and the hook can never disagree about who is running.
+The two pieces share one detector. `dashboard.py` finds the live sessions and
+flags the collisions; `hooks/git-workspace-brief.py` calls the same two
+functions, `session_rows()` and `flag_clashes()`, so the page and the warning
+can never disagree about who is running.
 
 ## What you need
 
-Windows, Python 3, and Claude Code or Codex already installed. No packages, no
-install step — the board is one file of standard library.
+**Windows**, Python 3, and Claude Code or Codex already installed. No packages,
+no install step — the board is one file of standard library.
 
-Liveness is proved rather than guessed, and both proofs are Windows ones: a
-process creation time for Claude, an open file handle for Codex. macOS and
-Linux fall back to weaker checks that have never been run in anger, so treat
-this as a Windows tool until somebody reports otherwise.
+Windows is not incidental. Proving that a session is genuinely still running,
+rather than guessing from a file that was touched recently, is done differently
+on every operating system, and only the Windows way is tested. macOS and Linux
+have fallbacks that nobody has exercised.
 
 ## Running the board
 
@@ -68,14 +82,34 @@ For a Desktop icon: right-click `board.cmd`, **Show more options**, **Send
 to**, **Desktop (create shortcut)**. Then right-click the shortcut,
 **Properties**, **Change Icon**, and point it at `assets/icon.ico`.
 
+## Wiring up the session-start hook
+
+`hooks/git-workspace-brief.py` runs when a Claude Code session starts, in any
+repository. It reports the branch, the trunk, how many files are uncommitted,
+the worktree list, and any collision with a session already running. It takes
+about a second against a fifteen-second budget, paid once per session rather
+than per turn.
+
+Add it to `~/.claude/settings.json`:
+
+```json
+"SessionStart": [
+  { "hooks": [ { "type": "command", "timeout": 15,
+      "command": "python \"<path to this repo>/hooks/git-workspace-brief.py\"" } ] }
+]
+```
+
+If `dashboard.py` cannot be loaded, the brief says so out loud rather than
+reporting no collisions. Silence would read as "nobody else is here", which is
+the one wrong answer that costs work.
+
 ## Reading the board
 
 **The strip at the top** lists every session that has stopped. One that *needs
 your answer* is holding a task open; one that is *done* simply finished its
 turn. Both mean nothing moves until you act, which is why they share the strip
 — but they are not the same thing, so questions sort first. Each line ends with
-the agent and the window to go and find it in. The count also goes in the page
-title, so the taskbar button reads "2 waiting" without the board being open.
+the agent and the window to go and find it in.
 
 **The left edge of a card** is what that session is doing:
 
@@ -141,27 +175,6 @@ starting a session, no stopping one.
 Pick by what you need. To drive several agents from one window, use a harness.
 To know what is already running — including the sessions a harness cannot see
 — use this. They answer different questions, and running both is reasonable.
-
-## The session-start hook
-
-`hooks/git-workspace-brief.py` runs when a Claude Code session starts, in any
-repository. It reports the branch, the trunk, how many files are uncommitted,
-the worktree list, and any collision with a session already running. It takes
-about a second against a fifteen-second budget, paid once per session rather
-than per turn.
-
-Wire it up in `~/.claude/settings.json`:
-
-```json
-"SessionStart": [
-  { "hooks": [ { "type": "command", "timeout": 15,
-      "command": "python \"<path to this repo>/hooks/git-workspace-brief.py\"" } ] }
-]
-```
-
-If `dashboard.py` cannot be loaded, the brief says so out loud rather than
-reporting no collisions. Silence would read as "nobody else is here", which is
-the one wrong answer that costs work.
 
 ## Tests
 
