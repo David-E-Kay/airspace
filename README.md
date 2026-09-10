@@ -1,4 +1,4 @@
-# Multi-agent session toolkit
+# Airspace
 
 <img src="assets/icon-256.png" alt="" width="88" align="right">
 
