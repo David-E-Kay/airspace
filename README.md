@@ -174,16 +174,6 @@ Pick by what you need. To drive several agents from one window, use a harness.
 To know what is already running — including the sessions a harness cannot see
 — use this. They answer different questions, and running both is reasonable.
 
-## Tests
-
-```
-python test_dashboard.py
-```
-
-Every check was proven able to fail before being trusted: the logic it guards
-was broken on purpose and the check watched to go red. A test that has never
-failed is not a test.
-
 ## Further reading
 
 - **[One-line summaries from a local model](docs/summaries.md)** — optional.
