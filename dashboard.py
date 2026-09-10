@@ -5,7 +5,7 @@ Read-only. Reads the live process registry and each session's transcript, asks
 git about each folder, and renders one self-refreshing page. It never writes to
 a session, spawns anything, or plans work.
 
-ponytail: single file, stdlib only. Split it when it stops fitting on a screen.
+Single file, stdlib only. Split it when it stops fitting on a screen.
 """
 import hashlib
 import html
@@ -149,8 +149,8 @@ def is_alive(entry):
     started = proc_start(pid)
     if started is None:
         return False
-    # ponytail: builds before 2.1 wrote no procStart. Trust the PID there
-    # rather than hide a real session; drop this once none are left.
+    # Builds before 2.1 wrote no procStart. Trust the PID there rather than
+    # hide a real session; drop this once none are left.
     claimed = entry.get('procStart')
     return claimed is None or str(claimed) == str(started)
 
@@ -405,10 +405,10 @@ def read_activity(entries):
     made a session that had simply stopped talking look as urgent as one
     holding a question. Only `asking` is genuinely blocked on you.
 
-    ponytail: a session parked on a permission prompt is indistinguishable
-    from one mid-tool-call - the transcript records the call either way - so
-    it reads as `working`. Fixing that needs a hook writing into the session,
-    which this board deliberately does not do.
+    A session parked on a permission prompt is indistinguishable from one
+    mid-tool-call - the transcript records the call either way - so it reads
+    as `working`. Fixing that needs a hook writing into the session, which
+    this board deliberately does not do.
     """
     last_ts = next((d['timestamp'] for d in reversed(entries) if d.get('timestamp')), None)
     convo = [e for e in entries
@@ -475,9 +475,9 @@ def read_title(path, entries):
             return _TITLES[key]
     if key in _TITLES:
         return _TITLES[key]
-    # ponytail: scanning whole transcripts tripled page build to 3.2s, so the
-    # result is kept for the life of the server. A rename is picked up from
-    # the tail above, which is the only way a title changes.
+    # Scanning whole transcripts tripled page build to 3.2s, so the result is
+    # kept for the life of the server. A rename is picked up from the tail
+    # above, which is the only way a title changes.
     title = ''
     try:
         with open(path, 'rb') as fh:
@@ -519,8 +519,8 @@ CODEX_CALLS = ('function_call', 'custom_tool_call', 'web_search_call',
 def codex_lock_held(path):
     """Whether a running process still has this thread's lock file open."""
     if sys.platform != 'win32':
-        # ponytail: the lock scheme is only verified on Windows. Elsewhere,
-        # fall back to "written recently" rather than claim more than we know.
+        # The lock scheme is only verified on Windows. Elsewhere, fall back
+        # to "written recently" rather than claim more than we know.
         try:
             return time.time() - os.path.getmtime(path) < 900
         except OSError:
@@ -775,8 +775,8 @@ def note_change(sid, state, now=None):
 def pretty_model(name):
     """Model ids are built for machines. Trim to the part that identifies it.
 
-    ponytail: four rules, no lookup table. An id that matches none of them is
-    shown as it is, which is worse-looking but never wrong.
+    Four rules, no lookup table. An id that matches none of them is shown as
+    it is, which is worse-looking but never wrong.
     """
     n = re.sub(r'-\d{8}$', '', str(name or ''))     # drop the date stamp
     n = re.sub(r'^claude-', '', n)
@@ -1179,9 +1179,9 @@ _LAST_SEEN = time.time()
 def window_gone(now=None):
     """Has the page stopped asking for itself?
 
-    ponytail: a heartbeat, not a watched browser process. Chrome hands an
-    --app window to a Chrome that is already running and the process we
-    launched exits half a second later, so its exit says nothing at all.
+    A heartbeat, not a watched browser process. Chrome hands an --app window
+    to a Chrome that is already running and the process we launched exits
+    half a second later, so its exit says nothing at all.
     """
     return (now or time.time()) - _LAST_SEEN > IDLE_EXIT_SECONDS
 
