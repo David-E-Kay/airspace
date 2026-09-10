@@ -5,8 +5,9 @@ one change most likely to be wanted: teaching it to see a coding agent it does
 not currently know about.
 
 `dashboard.py` is a single stdlib-only file. There is no package, no
-framework, no dependency to install. `test_dashboard.py` sits beside it and is
-run directly. Keep it that way unless the file stops fitting in your head.
+framework, no dependency to install. `tests/test_dashboard.py` holds its
+checks and is run directly. Keep it that way unless the file stops fitting in
+your head.
 
 ## The shape of the thing
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Checks for the four bits of logic that could fail silently.
 
-Run: python test_dashboard.py
+Run: python tests/test_dashboard.py
 """
 import io
 import json
@@ -11,6 +11,12 @@ import sys
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+# dashboard.py and hooks/ live in the repo root, one level up. Put the root on
+# the path so this file runs the same whether it is invoked from here or from
+# the root, and anchor on ROOT rather than on this file's own directory.
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
 import dashboard as d
 
@@ -678,7 +684,7 @@ def test_a_starting_session_sees_the_collision_it_is_walking_into():
 def test_the_session_start_hook_runs_and_reports_the_workspace():
     """The hook is a separate process reaching back into dashboard.py, so an
     import that only works from the repo root would break it silently."""
-    hook = Path(__file__).resolve().parent / 'hooks' / 'git-workspace-brief.py'
+    hook = ROOT / 'hooks' / 'git-workspace-brief.py'
     assert hook.exists(), hook
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -709,7 +715,7 @@ def test_the_hook_actually_prints_the_collisions_it_is_given():
     import importlib.util
     spec = importlib.util.spec_from_file_location(
         'workspace_brief',
-        Path(__file__).resolve().parent / 'hooks' / 'git-workspace-brief.py')
+        ROOT / 'hooks' / 'git-workspace-brief.py')
     hook = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(hook)
 
