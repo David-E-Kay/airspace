@@ -6,6 +6,20 @@ The line on each card is picked out of what the session wrote — first line,
 markdown stripped, cut at a sentence. A rule can only pick words that are
 already there; it cannot compress meaning. A small local model can.
 
+## What the model reads
+
+Three things: what you last typed, the whole of the session's last reply, and
+the tools it has been running. All of it, not the trimmed line the card shows.
+
+That last part used to be the whole input, and one trimmed sentence is not
+enough to work from — the only move left to a model handed a sentence is to
+reword it, which is what the lines read like. With the request and the tools
+alongside it there is something to summarise, and the line can say what the
+session is doing rather than restate how it said it.
+
+Codex sessions are given the reply and the tools but not the request, because
+a Codex prompt on disk arrives wrapped in pasted environment text.
+
 ## Turning it on
 
 The board reads `BOARD_SUMMARY_MODEL` once, at startup. `board.cmd` sets it to
@@ -37,9 +51,13 @@ card keeps its plain-text line, and the page is unaffected.
 
 The model is held for five minutes after the last summary, then Ollama drops
 it. Closing the board window drops it straight away — the page asks the board
-for a fresh copy of itself every ten seconds, so a minute of silence means the
-window is gone, and the board unloads the model and shuts down. Nothing is
-left sitting on video memory.
+for a fresh copy of itself every ten seconds, so two and a half minutes of
+silence means the window is gone, and the board unloads the model and shuts
+down. Nothing is left sitting on video memory.
+
+The wait is that long on purpose. A browser slows a minimised window's timers
+to roughly one tick a minute, so a shorter wait would read a window you had
+simply clicked away from as one you had closed.
 
 `ollama ps` shows what is loaded, if you want to check.
 

@@ -392,19 +392,24 @@ def test_local_summaries_are_optional_and_never_block_the_page():
     """The board has to work on a machine with no graphics card, so the model
     is off unless configured - and a card must never wait on one."""
     assert d.SUMMARY_MODEL == '', 'summaries must ship switched off'
-    assert d.summarise('read the config file', ['Read a.py']) == ''
+    assert d.summarise('fix it', 'read the config file', ['Read a.py']) == ''
 
     d.SUMMARY_MODEL, d.OLLAMA_URL = 'test-model', 'http://127.0.0.1:9'
     try:
-        d._SUMMARIES[d.summary_key('said', ['Read a.py'])] = 'reading the config'
-        assert d.summarise('said', ['Read a.py']) == 'reading the config'
+        d._SUMMARIES[d.summary_key('ask', 'said', ['Read a.py'])] = \
+            'reading the config'
+        assert d.summarise('ask', 'said', ['Read a.py']) == 'reading the config'
         # the turn moved on, so the cached answer must not be reused - and
         # asking must hand back an empty line rather than wait for one
-        assert d.summarise('said', ['Read b.py']) == ''
+        assert d.summarise('ask', 'said', ['Read b.py']) == ''
+
+        # a different request is a different turn, however alike the replies
+        d._ASKED.clear()
+        assert d.summarise('other', 'said', ['Read a.py']) == ''
 
         # a turn with nothing in it is not worth waking the model for
         d._ASKED.clear()
-        assert d.summarise('   ', ['Read a.py']) == ''
+        assert d.summarise('ask', '   ', ['Read a.py']) == ''
         assert not d._ASKED, 'an empty turn was sent to the model'
     finally:
         d.SUMMARY_MODEL, d.OLLAMA_URL = '', 'http://127.0.0.1:11434'
@@ -452,7 +457,7 @@ def test_the_models_answer_is_tidied_and_a_dead_model_costs_nothing():
     try:
         d.urllib.request.urlopen = \
             lambda *a, **k: Fake('THIS CODING SESSION IS READING X')
-        d._fetch_summary('k1', 'said', ['Read a.py'])
+        d._fetch_summary('k1', 'ask', 'said', ['Read a.py'])
         assert d._SUMMARIES['k1'] == 'Reading x', d._SUMMARIES['k1']
 
         def dead(*a, **k):
@@ -460,7 +465,7 @@ def test_the_models_answer_is_tidied_and_a_dead_model_costs_nothing():
 
         d.urllib.request.urlopen = dead
         d._ASKED.add('k2')                       # as summarise() would have
-        d._fetch_summary('k2', 'said', [])       # must not raise
+        d._fetch_summary('k2', 'ask', 'said', [])  # must not raise
         assert d._SUMMARIES['k2'] == '', d._SUMMARIES['k2']
         assert 'k2' not in d._ASKED, 'a failed ask was never released'
     finally:
@@ -627,7 +632,7 @@ def test_a_summary_does_not_park_the_model_in_the_gpu_for_half_an_hour():
     try:
         d.urllib.request.urlopen = \
             lambda req, **k: (sent.append(json.loads(req.data)), Fake())[1]
-        d._fetch_summary('ka', 'said', [])
+        d._fetch_summary('ka', 'ask', 'said', [])
         assert sent[0]['keep_alive'] == d.KEEP_ALIVE, sent
     finally:
         d.urllib.request.urlopen = real
@@ -932,6 +937,88 @@ def test_the_strip_names_the_app_each_stopped_session_is_in():
     assert 'codex &middot; terminal' in lines[1], lines[1]
     # no app on file: the agent alone, never a dangling separator
     assert 'claude' in lines[2] and '&middot;' not in lines[2], lines[2]
+
+
+def test_the_summary_model_is_given_the_request_and_the_whole_reply():
+    """What the card shows and what the model reads are different things.
+
+    The card gets one trimmed line. The model used to get that same line, so
+    the only move left to it was to reword a sentence. It now gets what was
+    asked and the reply entire.
+    """
+    reply = ('## Cutting the retry loop\n\n'
+             'The [handler](a.py) swallowed the timeout, so a failed upload '
+             'looked like a clean one. ' + 'Detail. ' * 40)
+    entries = [
+        {'type': 'user', 'timestamp': '2026-09-05T10:00:00Z',
+         'message': {'content': 'why do uploads silently fail?'}},
+        {'type': 'assistant', 'timestamp': '2026-09-05T10:00:20Z',
+         'message': {'content': [{'type': 'text', 'text': reply}]}},
+        # the harness writes these; neither is something you typed
+        {'type': 'user', 'timestamp': '2026-09-05T10:00:25Z', 'isMeta': True,
+         'message': {'content': 'Caveat: the messages below were generated'}},
+        {'type': 'user', 'timestamp': '2026-09-05T10:00:30Z',
+         'message': {'content': [{'type': 'tool_result', 'content': 'ok'}]}},
+    ]
+    got = d.read_activity(entries)
+    assert got['asked'] == 'why do uploads silently fail?', got['asked']
+    assert 'swallowed the timeout' in got['says_full'], got['says_full']
+    assert len(got['says_full']) > 400, \
+        'the model is still being handed a trimmed line'
+    # the card itself stays short, and stays the first line
+    assert got['says'] == 'Cutting the retry loop', got['says']
+
+
+def test_the_request_and_the_reply_both_reach_the_model():
+    """The plumbing above is worth nothing if the prompt drops it."""
+    sent = {}
+
+    class Fake:
+        def read(self):
+            return json.dumps({'response': 'fixing the silent upload retry'}) \
+                .encode('utf-8')
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    real = d.urllib.request.urlopen
+    d.SUMMARY_MODEL = 'test-model'
+    try:
+        def spy(req, *a, **k):
+            sent.update(json.loads(req.data.decode('utf-8')))
+            return Fake()
+
+        d.urllib.request.urlopen = spy
+        d._fetch_summary('k', 'why do uploads silently fail?',
+                         'the handler swallowed the timeout',
+                         ['Read a.py', 'sh pytest'])
+        prompt = sent['prompt']
+        assert 'why do uploads silently fail?' in prompt, prompt
+        assert 'swallowed the timeout' in prompt, prompt
+        assert 'sh pytest' in prompt, prompt
+        assert d._SUMMARIES['k'] == 'fixing the silent upload retry'
+    finally:
+        d.urllib.request.urlopen = real
+        d.SUMMARY_MODEL = ''
+        d._SUMMARIES.clear()
+        d._ASKED.clear()
+
+
+def test_the_page_refreshes_without_reloading_itself():
+    """A whole-page reload repaints the tab icon, and Windows flashes the
+    taskbar button with it - every ten seconds, all day."""
+    page = d.render([])
+    assert 'http-equiv="refresh"' not in page, \
+        'a meta refresh reloads the page, which flashes the taskbar icon'
+    assert 'document.body.innerHTML' in page, 'nothing refreshes the board'
+    assert f'{d.REFRESH_SECONDS * 1000}' in page, 'the refresh has no interval'
+    # the board shuts down when the page stops asking, so the timer a hidden
+    # window is throttled down to must still be comfortably inside the window
+    assert d.IDLE_EXIT_SECONDS > 60, \
+        'a minimised window would be mistaken for a closed one'
 
 
 if __name__ == '__main__':

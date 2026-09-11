@@ -73,9 +73,12 @@ SUMMARY_KEEP = 400
 # How long Ollama holds the model in the GPU after a summary. Short, so a
 # board left open overnight is not sitting on VRAM it has stopped using.
 KEEP_ALIVE = '5m'
-# The page reloads itself every REFRESH_SECONDS. Going quiet for this long
-# means the window is shut, and the board has nothing left to serve.
-IDLE_EXIT_SECONDS = 60
+# The page asks for itself every REFRESH_SECONDS. Going quiet for this long
+# means the window is shut, and the board has nothing left to serve. Well
+# clear of a minute: a browser throttles a hidden window's timers to about one
+# tick a minute, and a board that quit while you were in another window would
+# be worse than a slow goodbye.
+IDLE_EXIT_SECONDS = 150
 
 # How long a session can be busy without writing anything to its log before
 # the card says so. It is a fact, not a diagnosis: nothing on disk separates
@@ -297,10 +300,18 @@ def headline(text, limit=120):
 # must not need a graphics card, and it never runs on the page's own thread -
 # a card keeps its plain-text line until an answer arrives, one refresh later.
 
+# What went in used to be one 160-character line of the reply, which left the
+# model nothing to compress - a summary of a single sentence can only be a
+# rewording of it. It now sees what was asked, the whole of the reply, and the
+# tools, which is enough to name the work rather than restate the wording.
 SUMMARY_PROMPT = (
-    'One short line, at most 12 words, saying what this coding session is '
-    'doing. No preamble, no quotes.\n\n'
-    'IT SAID: {said}\nRECENT TOOLS: {trail}\n\nLINE:'
+    'Read a coding session and say what work it is doing.\n\n'
+    'THEY ASKED: {asked}\n'
+    'IT REPLIED: {said}\n'
+    'TOOLS IT RAN: {trail}\n\n'
+    'One line, at most 14 words, naming the task and how far along it is. '
+    'Describe the work, not the wording of the reply. No preamble, no '
+    'quotes.\n\nLINE:'
 )
 
 # A 1.5B model spends a third of the line restating the question - "This
@@ -327,16 +338,20 @@ _ASKED = set()
 _SUMMARY_LOCK = threading.Lock()
 
 
-def summary_key(said, trail):
+def summary_key(asked, said, trail):
     """Same turn, same answer. A new tool means the turn has moved on."""
-    return hashlib.sha1('|'.join([said, *trail]).encode('utf-8')).hexdigest()
+    return hashlib.sha1(
+        '|'.join([asked, said, *trail]).encode('utf-8')).hexdigest()
 
 
-def _fetch_summary(key, said, trail):
+def _fetch_summary(key, asked, said, trail):
     body = json.dumps({
         'model': SUMMARY_MODEL, 'stream': False, 'keep_alive': KEEP_ALIVE,
-        'prompt': SUMMARY_PROMPT.format(said=said[:1200], trail=', '.join(trail)),
-        'options': {'num_predict': 24, 'temperature': 0.2},
+        'prompt': SUMMARY_PROMPT.format(
+            asked=asked[:600] or 'not recorded',
+            said=said[:1500],
+            trail=', '.join(trail) or 'none'),
+        'options': {'num_predict': 28, 'temperature': 0.2},
     }).encode('utf-8')
     line = ''
     try:
@@ -370,18 +385,18 @@ def unload_model():
         pass  # nothing to unload if Ollama is already gone
 
 
-def summarise(said, trail):
+def summarise(asked, said, trail):
     """The model's one-line read of the turn, or '' until it arrives."""
     if not SUMMARY_MODEL or not said.strip():
         return ''
-    key = summary_key(said, trail)
+    key = summary_key(asked, said, trail)
     with _SUMMARY_LOCK:
         if key in _SUMMARIES:
             return _SUMMARIES[key]
         if key in _ASKED:
             return ''
         _ASKED.add(key)
-    threading.Thread(target=_fetch_summary, args=(key, said, trail),
+    threading.Thread(target=_fetch_summary, args=(key, asked, said, trail),
                      daemon=True).start()
     return ''
 
@@ -389,6 +404,26 @@ def summarise(said, trail):
 def blocks_of(entry):
     content = (entry.get('message') or {}).get('content')
     return content if isinstance(content, list) else []
+
+
+def last_asked(entries):
+    """The last thing you actually typed.
+
+    A typed prompt is a user entry whose content is a plain string. A tool
+    result is a user entry too, but carries a list of blocks, and `isMeta`
+    marks the ones the harness wrote rather than you - so both are skipped.
+
+    Only the summary model reads this. What was asked is half of what a turn
+    means, and without it the model could describe nothing but the reply.
+    """
+    for d in reversed(entries):
+        if d.get('type') != 'user' or d.get('isMeta'):
+            continue
+        content = (d.get('message') or {}).get('content')
+        if isinstance(content, str) and content.strip():
+            return strip_md(content)
+    return ''
+
 
 
 def read_activity(entries):
@@ -455,7 +490,10 @@ def read_activity(entries):
 
     return {'state': state, 'detail': detail, 'since': since,
             'trail': trail[-6:], 'last_ts': last_ts, 'model': model,
-            'says': headline(says, 160)}
+            'says': headline(says, 160),
+            # The card shows `says`, one trimmed line. The model gets the
+            # whole reply and the request - it is reading, not displaying.
+            'says_full': strip_md(says), 'asked': last_asked(entries)}
 
 
 _TITLES = {}
@@ -650,9 +688,12 @@ def read_codex_activity(entries):
     if state == 'done':
         # Nothing is running, so there is no action to name.
         detail = ''
+    # No `asked`: a Codex user message carries pasted environment blurb as
+    # well as the prompt, and the full reply below is the bigger win anyway.
     return {'state': state, 'detail': detail, 'since': since,
             'trail': trail[-6:], 'last_ts': last_ts, 'model': model,
-            'says': headline(says, 160)}
+            'says': headline(says, 160),
+            'says_full': strip_md(says), 'asked': ''}
 
 
 def codex_rows(root=CODEX):
@@ -871,7 +912,9 @@ def collect():
         # Its own row now. It used to overwrite whichever prose line the
         # state happened to use, which left the card unable to say which of
         # the two you were reading.
-        r['summary'] = summarise(r['says'] or r['detail'], r['trail'])
+        r['summary'] = summarise(r.get('asked', ''),
+                                 r.get('says_full') or r['says'] or r['detail'],
+                                 r['trail'])
     flag_clashes(rows)
 
     groups = {}
@@ -1056,7 +1099,19 @@ def render(groups, error=''):
     e = html.escape
     parts = [
         '<!doctype html><html><head><meta charset="utf-8">',
-        f'<meta http-equiv="refresh" content="{REFRESH_SECONDS}">',
+        # Refreshed by fetching a fresh copy and swapping the body in,
+        # not by reloading. A reload makes Windows redraw the tab icon, and
+        # the taskbar button flashes every time. Only <body> is replaced, so
+        # this script is not re-run and the scroll position survives.
+        '<script>setInterval(function(){'
+        'fetch(location.href,{cache:"no-store"})'
+        '.then(function(r){return r.text()})'
+        '.then(function(t){'
+        'var p=new DOMParser().parseFromString(t,"text/html");'
+        'document.title=p.title;'
+        'document.body.innerHTML=p.body.innerHTML;})'
+        '.catch(function(){});'
+        f'}}, {REFRESH_SECONDS * 1000});</script>',
         # The tab icon, inline so the board still serves one file and
         # needs no second request. Simplified like the small .ico:
         # one ring, the sweep, one contact.
