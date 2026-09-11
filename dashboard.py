@@ -1040,6 +1040,11 @@ h2 { font-size:13px; font-weight:600; margin:18px 0 7px; color:#cfd4dc; }
              font-size:10px; color:#ff9c94; }
 .empty { color:#8b93a1; padding:20px 0; }
 footer { margin-top:20px; font-size:10px; color:#5b626d; }
+/* ponytail: light mode is the whole page inverted, not a second palette.
+   hue-rotate puts the hues back, so green stays green. Swap for real light
+   values if the washed-out look ever grates. */
+html.light { filter: invert(1) hue-rotate(180deg); }
+#theme { position:fixed; top:14px; right:16px; cursor:pointer; font-family:inherit; }
 """
 
 
@@ -1052,6 +1057,9 @@ def render(groups, error=''):
         # needs no second request. Simplified like the small .ico:
         # one ring, the sweep, one contact.
         f'<link rel="icon" href="{FAVICON}">',
+        # Set before the body paints, so a refresh does not flash dark first.
+        '<script>if(localStorage.theme==="light")'
+        'document.documentElement.className="light"</script>',
     ]
     # The count goes in the title so Windows shows it on the taskbar button.
     # Most glances at this board only ever needed that one number.
@@ -1060,6 +1068,9 @@ def render(groups, error=''):
         f'<title>{len(waiting)} waiting &middot; Session Board</title>'
         if waiting else '<title>Session Board</title>',
         f'<style>{CSS}</style></head><body>',
+        '<button id="theme" class="btn" onclick="localStorage.theme='
+        "document.documentElement.classList.toggle('light')?'light':'dark'"
+        '">light / dark</button>',
         '<h1>Live agent sessions</h1>',
     ]
     if waiting:
