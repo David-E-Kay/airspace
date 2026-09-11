@@ -1044,7 +1044,11 @@ footer { margin-top:20px; font-size:10px; color:#5b626d; }
    hue-rotate puts the hues back, so green stays green. Swap for real light
    values if the washed-out look ever grates. */
 html.light { filter: invert(1) hue-rotate(180deg); }
-#theme { position:fixed; top:14px; right:16px; cursor:pointer; font-family:inherit; }
+#theme { position:fixed; top:12px; right:16px; cursor:pointer; line-height:1;
+         padding:5px 9px; font-size:14px; }
+/* The glyph names where the click goes, not where you are. */
+#theme::after { content:"☀"; }
+html.light #theme::after { content:"☽"; }
 """
 
 
@@ -1068,9 +1072,10 @@ def render(groups, error=''):
         f'<title>{len(waiting)} waiting &middot; Session Board</title>'
         if waiting else '<title>Session Board</title>',
         f'<style>{CSS}</style></head><body>',
-        '<button id="theme" class="btn" onclick="localStorage.theme='
+        '<button id="theme" class="btn" aria-label="Switch light or dark" '
+        'onclick="localStorage.theme='
         "document.documentElement.classList.toggle('light')?'light':'dark'"
-        '">light / dark</button>',
+        '"></button>',
         '<h1>Live agent sessions</h1>',
     ]
     if waiting:
