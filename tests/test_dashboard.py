@@ -29,9 +29,14 @@ def test_slug_matches_claude_layout():
     # every non-alphanumeric becomes a dash, underscores and dots included
     assert d.slug_for(r'C:\a_b.c-d') == 'C--a-b-c-d'
 
-    # known-positive: the derived slug exists on this machine
-    real = Path.home() / '.claude' / 'projects' / d.slug_for(Path.home() / '.claude')
-    assert real.is_dir(), f'slug rule drifted: {real} not found'
+    # Known-positive, on a machine that actually runs Claude Code: the derived
+    # slug must name a directory that exists. The assertions above are pure
+    # arithmetic and would keep passing if Claude changed its layout. Skipped
+    # where there is no install to check against, such as a CI runner.
+    projects = Path.home() / '.claude' / 'projects'
+    if projects.is_dir():
+        real = projects / d.slug_for(Path.home() / '.claude')
+        assert real.is_dir(), f'slug rule drifted: {real} not found'
 
 
 def test_tail_reads_last_action_and_what_it_said():
@@ -845,7 +850,7 @@ def test_waiting_sessions_come_first_and_are_counted_in_the_title():
     assert 'stopped for you' in page and 'needs an answer' in page
 
     quiet_page = d.render([('aaa', [busy])])
-    assert '<title>Session Board</title>' in quiet_page, quiet_page[:400]
+    assert '<title>Airspace</title>' in quiet_page, quiet_page[:400]
     assert 'stopped for you' not in quiet_page
 
 

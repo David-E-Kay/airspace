@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Session board: what every live Claude Code session is doing, in one page.
+"""Airspace: what every live Claude Code and Codex session is doing, in one page.
 
 Read-only. Reads the live process registry and each session's transcript, asks
 git about each folder, and renders one self-refreshing page. It never writes to
@@ -1069,8 +1069,8 @@ def render(groups, error=''):
     # Most glances at this board only ever needed that one number.
     waiting = [r for _, rows in groups for r in rows if wants_you(r)]
     parts += [
-        f'<title>{len(waiting)} waiting &middot; Session Board</title>'
-        if waiting else '<title>Session Board</title>',
+        f'<title>{len(waiting)} waiting &middot; Airspace</title>'
+        if waiting else '<title>Airspace</title>',
         f'<style>{CSS}</style></head><body>',
         '<button id="theme" class="btn" aria-label="Switch light or dark" '
         'onclick="localStorage.theme='
@@ -1243,7 +1243,7 @@ def main():
     # to fail. Measured 3.2s via localhost against 1.3s via 127.0.0.1.
     url = f'http://127.0.0.1:{PORT}/'
     server = ThreadingHTTPServer(('127.0.0.1', PORT), Handler)
-    print(f'Session board on {url}   (Ctrl+C to stop)')
+    print(f'Airspace on {url}   (Ctrl+C to stop)')
     if '--no-browser' not in sys.argv:
         print('Opened in', open_window(url))
         # Close the window and the board stops, freeing the GPU with it.
