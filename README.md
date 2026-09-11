@@ -2,6 +2,7 @@
 
 <img src="assets/icon-256.png" alt="" width="88" align="right">
 
+[![tests](https://github.com/David-E-Kay/airspace/actions/workflows/tests.yml/badge.svg)](https://github.com/David-E-Kay/airspace/actions/workflows/tests.yml)
 ![Windows](https://img.shields.io/badge/platform-Windows-0078D4?logo=windows&logoColor=white)
 ![Python 3](https://img.shields.io/badge/python-3-3776AB?logo=python&logoColor=white)
 ![No dependencies](https://img.shields.io/badge/dependencies-none-2ea44f)

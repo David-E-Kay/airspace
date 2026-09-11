@@ -1,0 +1,20 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    # Windows only: the board reads Windows session paths and is not claimed
+    # to work anywhere else.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      # No pip install: the project is stdlib only, and the test file runs
+      # itself. Installing pytest here would quietly stop that staying true.
+      - run: python tests/test_dashboard.py
