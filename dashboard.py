@@ -32,11 +32,16 @@ TAIL_BYTES = 64 * 1024
 # window can fall behind.
 CODEX_TAIL_BYTES = 256 * 1024
 PORT = 8765
-# The same drawing twice. The .ico is the one the taskbar wants - it carries
-# every size from 16 up to 256, so Windows never has to stretch a small one.
-# The inline copy below is the fallback for a dashboard.py on its own, and it
-# is what the tab strip uses. assets/make_icon.py regenerates the .ico.
-ICON_FILE = Path(__file__).resolve().parent / 'assets' / 'icon.ico'
+# assets/icon.ico is the same drawing; assets/make_icon.py regenerates it.
+#
+# The taskbar button for the open board looks softer than the pinned
+# shortcut, and no favicon fixes that. Serving the .ico was tried: Chrome
+# does fetch it (measured), and the button stayed soft, because Chrome keeps
+# a window icon at 32 pixels whatever it was given. A 250% display draws
+# that button at 60, so Windows is stretching 32 to 60 every time. The
+# shortcut escapes it by reading the .ico itself, which carries a 64.
+# The way out is installing the board as a web app, so Windows gets a real
+# multi-size icon for the window - not a favicon change.
 FAVICON = (
     "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' "
     "viewBox='0 0 256 256'>"
@@ -1116,14 +1121,10 @@ def render(groups, error=''):
         'document.body.innerHTML=p.body.innerHTML;})'
         '.catch(function(){});'
         f'}}, {REFRESH_SECONDS * 1000});</script>',
-        # Chrome rasterises an SVG favicon at 16 pixels, and Windows
-        # stretches that to fill the taskbar button - which is why the open
-        # board looked softer than the pinned shortcut beside it. Handing
-        # over the .ico gives it a 256-pixel drawing to start from. It is
-        # the one extra request the board makes, fetched once per window,
-        # and a lone dashboard.py still gets the inline drawing.
-        '<link rel="icon" href="/icon.ico">' if ICON_FILE.exists()
-        else f'<link rel="icon" href="{FAVICON}">',
+        # The tab icon, inline so the board still serves one file and
+        # needs no second request. Simplified like the small .ico:
+        # one ring, the sweep, one contact.
+        f'<link rel="icon" href="{FAVICON}">',
         # Set before the body paints, so a refresh does not flash dark first.
         '<script>if(localStorage.theme==="light")'
         'document.documentElement.className="light"</script>',
@@ -1277,21 +1278,6 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         global _LAST_SEEN
         _LAST_SEEN = time.time()
-        if self.path == '/icon.ico':
-            try:
-                icon = ICON_FILE.read_bytes()
-            except OSError:
-                self.send_error(404)
-                return
-            self.send_response(200)
-            self.send_header('Content-Type', 'image/x-icon')
-            self.send_header('Content-Length', str(len(icon)))
-            # The drawing does not change while the board runs, and the head
-            # is never re-parsed, so this is asked for once per window.
-            self.send_header('Cache-Control', 'max-age=86400')
-            self.end_headers()
-            self.wfile.write(icon)
-            return
         if self.path not in ('/', '/index.html'):
             self.send_error(404)
             return

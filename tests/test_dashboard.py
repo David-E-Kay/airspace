@@ -1021,29 +1021,6 @@ def test_the_page_refreshes_without_reloading_itself():
         'a minimised window would be mistaken for a closed one'
 
 
-def test_the_taskbar_gets_the_ico_not_a_stretched_svg():
-    """An SVG favicon is rasterised at 16 pixels and stretched from there,
-    which left the open board looking softer than the pinned shortcut."""
-    assert d.ICON_FILE.exists(), 'assets/icon.ico is what the taskbar wants'
-    head = d.render([]).split('</head>')[0]
-    assert '<link rel="icon" href="/icon.ico">' in head, head[:400]
-
-    # a lone dashboard.py has no assets/ beside it, and must still show one
-    real = d.ICON_FILE
-    try:
-        d.ICON_FILE = Path(tempfile.gettempdir()) / 'no-such-icon.ico'
-        head = d.render([]).split('</head>')[0]
-        assert 'data:image/svg+xml' in head, 'no icon at all without assets/'
-    finally:
-        d.ICON_FILE = real
-
-    # the .ico really does carry the large sizes the taskbar draws from
-    raw = real.read_bytes()
-    count = int.from_bytes(raw[4:6], 'little')
-    sizes = {raw[6 + i * 16] or 256 for i in range(count)}
-    assert 256 in sizes and 32 in sizes, sorted(sizes)
-
-
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_')]
     for t in tests:
