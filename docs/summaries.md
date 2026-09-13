@@ -34,15 +34,25 @@ ollama pull qwen2.5:1.5b-instruct
 ```
 
 The footer of the page names the model in use, or says `summaries: off`, so
-you can tell at a glance whether the setting reached the board.
+you can tell at a glance whether the setting reached the board. If calls to
+Ollama are coming back empty it says `no answer from Ollama` alongside the
+name, because a named model and a working one are not the same thing.
 
 Setting the variable in a terminal only lasts for that window, and a board
 started by double-clicking `board.cmd` never sees it. Put it in `board.cmd`,
 or use `setx BOARD_SUMMARY_MODEL <model>` to make it permanent for new
 processes.
 
+Ollama is a separate program that does not start with Windows, so `board.cmd`
+starts it — its tray app, which allows only one of itself, so starting it
+when it is already up does nothing. Installed somewhere other than
+`%LOCALAPPDATA%\Programs\Ollama` and that line is skipped; start Ollama
+yourself and the board picks the summaries up without being restarted.
+
 A model named here but not installed is not an error: the request fails, the
-card keeps its plain-text line, and the page is unaffected.
+card keeps its plain-text line, and the page is unaffected. A failure is not
+remembered as that turn's summary either — the board stays off Ollama for a
+minute and then asks again, so one that comes up late is still picked up.
 
 `BOARD_OLLAMA_URL` points at a different Ollama if yours is not on
 `http://127.0.0.1:11434`.
