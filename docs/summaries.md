@@ -45,9 +45,18 @@ processes.
 
 Ollama is a separate program that does not start with Windows, so `board.cmd`
 starts it — its tray app, which allows only one of itself, so starting it
-when it is already up does nothing. Installed somewhere other than
-`%LOCALAPPDATA%\Programs\Ollama` and that line is skipped; start Ollama
-yourself and the board picks the summaries up without being restarted.
+when it is already up does nothing.
+
+No install path is written down anywhere. `board.cmd` asks Windows where
+`ollama` is with `where ollama`, and the tray app sits in the same folder,
+so any install location works as long as the installer put Ollama on your
+PATH — which it does. Set `BOARD_OLLAMA_URL` and nothing is started
+locally at all, on the grounds that you have told the board Ollama lives
+somewhere else.
+
+If Ollama is not found the board still starts, without summaries. Start
+Ollama yourself afterwards and the board picks them up on its own, no
+restart needed.
 
 A model named here but not installed is not an error: the request fails, the
 card keeps its plain-text line, and the page is unaffected. A failure is not
