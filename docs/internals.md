@@ -90,6 +90,14 @@ the part that is different for every harness. Two working examples:
   failing to open it means a live process still owns it. No registry, no pid —
   hence `pid: None` in `codex_rows()`.
 
+Alive is necessary but not sufficient for Claude. The desktop app starts a
+session process the moment you click into an old chat, so a chat opened only to
+read is genuinely running. `worked_since_opening()` drops it: a session that
+has written nothing since its own process started has done nothing since you
+opened it. Its transcript cannot settle this — a dormant chat and a session
+waiting on you both end on an assistant turn, so both report `done`. Unknown
+counts as worked, because hiding a session is only safe on proof.
+
 If a harness offers neither, look for a lock, a socket, a pid file, or a
 process name — in that order. **Do not fall back on file modification times.**
 The original version of the session-start hook did exactly that, called a live

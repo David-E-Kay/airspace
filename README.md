@@ -136,6 +136,18 @@ thing.
 same files, and whoever saves last wins. *Same branch* — another session in a
 different folder saves to this branch too, so the two sets of changes will mix.
 
+**A session you only opened to read is not on the board.** The desktop app
+starts a real process the moment you click into an old chat, so reading one
+used to put it up as live, and archiving it or quitting the app were the only
+ways to get it back off. The board now compares two moments: when the process
+started, and when the session last wrote anything. A chat opened to read last
+wrote something *before* the process now holding it open — by weeks, often. A
+session with real work in it always wrote something after.
+
+No silence threshold is involved, deliberately. A question left hanging while
+you are in a meeting stays on the board however long you are gone.
+
+
 ## Two honest limits
 
 A session parked on a permission prompt reads as `working`. The transcript
