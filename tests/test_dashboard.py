@@ -1074,6 +1074,49 @@ def test_the_page_refreshes_without_reloading_itself():
         'a minimised window would be mistaken for a closed one'
 
 
+def test_a_session_opened_only_to_read_is_left_off_the_board():
+    """Clicking into an old chat starts a real process for it, so it reads as
+    live. What gives it away is that its last log entry predates the process
+    now holding it open."""
+    opened = '2026-09-13T23:39:09.453000+00:00'
+    assert not d.worked_since_opening(opened, '2026-09-04T22:39:30.694Z')
+    # known-positive: the same rule must keep a session that did work, or the
+    # check above would pass just as well with the board hiding everything
+    assert d.worked_since_opening(opened, '2026-09-13T23:45:53.773Z')
+    # seconds count - a new session writing its first line must not be hidden
+    assert d.worked_since_opening(opened, '2026-09-13T23:39:29.000Z')
+    # a timestamp that will not parse is never proof of anything
+    assert d.worked_since_opening(opened, None)
+    assert d.worked_since_opening(None, '2026-09-04T22:39:30.694Z')
+    assert d.worked_since_opening(opened, 'not a date')
+
+    # and the rule has to actually reach the rows the board renders
+    started = datetime.now(timezone.utc) - timedelta(hours=1)
+    def said(when):
+        return json.dumps({'type': 'assistant', 'timestamp': when.isoformat(),
+                           'message': {'content': [{'type': 'text',
+                                                    'text': 'all done'}]}})
+
+    with tempfile.TemporaryDirectory() as tmp:
+        (Path(tmp) / 'dormant.jsonl').write_text(
+            said(started - timedelta(days=9)), encoding='utf-8')
+        (Path(tmp) / 'busy.jsonl').write_text(
+            said(started + timedelta(minutes=5)), encoding='utf-8')
+
+        real_live, real_path = d.live_sessions, d.transcript_path
+        try:
+            d.live_sessions = lambda: [
+                {'sessionId': sid, 'cwd': str(tmp), 'pid': 1,
+                 'startedAt': started.timestamp() * 1000}
+                for sid in ('dormant', 'busy')]
+            d.transcript_path = lambda cwd, sid: Path(tmp) / f'{sid}.jsonl'
+            rows = d.claude_rows()
+        finally:
+            d.live_sessions, d.transcript_path = real_live, real_path
+
+    assert [r['sid'] for r in rows] == ['busy'], rows
+
+
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_')]
     for t in tests:

@@ -870,19 +870,55 @@ def iso_from_ms(ms):
         return None
 
 
+def moment(ts):
+    """An ISO timestamp as a datetime, or None if it isn't one."""
+    try:
+        return datetime.fromisoformat(str(ts).replace('Z', '+00:00'))
+    except (TypeError, ValueError):
+        return None
+
+
+def worked_since_opening(started, last_ts):
+    """Whether this session has written anything since its process started.
+
+    The desktop app starts a real session process the moment you click into a
+    chat, so a session opened only to read something is running, and lands on
+    the board. Nothing in its transcript separates it from a session that
+    genuinely stopped and is waiting for you: both end on an assistant turn,
+    so both read as `done`.
+
+    The clock separates them exactly. A session you opened to read last wrote
+    something BEFORE the process now holding it open - by weeks, in the case
+    that prompted this. A session with real work in it always wrote something
+    after. No silence threshold, so a question left hanging while you go to a
+    meeting still shows, however long you are gone.
+
+    Unknown counts as worked: hiding a session is only safe on proof it has
+    done nothing, never on a timestamp that failed to parse.
+    """
+    opened, wrote = moment(started), moment(last_ts)
+    if opened is None or wrote is None:
+        return True
+    return wrote > opened
+
+
 def claude_rows():
     rows = []
     for s in live_sessions():
         tpath = transcript_path(s['cwd'], s['sessionId'])
         entries = tail_entries(tpath)
+        activity = read_activity(entries)
+        started = iso_from_ms(s.get('startedAt'))
+        if not worked_since_opening(started, activity['last_ts']):
+            continue
         rows.append({
             'agent': 'claude', 'sid': s['sessionId'], 'cwd': s['cwd'],
             'pid': s.get('pid'),
             'app': pretty_app(s.get('entrypoint')),
-            'started': iso_from_ms(s.get('startedAt')),
+            'started': started,
             'title': (read_title(tpath, entries) or s.get('name')
                       or s['sessionId'][:8]),
-            **read_activity(entries),
+            **activity,
         })
     return rows
 
