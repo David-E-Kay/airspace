@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -466,13 +467,65 @@ def test_the_models_answer_is_tidied_and_a_dead_model_costs_nothing():
         d.urllib.request.urlopen = dead
         d._ASKED.add('k2')                       # as summarise() would have
         d._fetch_summary('k2', 'ask', 'said', [])  # must not raise
-        assert d._SUMMARIES['k2'] == '', d._SUMMARIES['k2']
+        assert 'k2' not in d._SUMMARIES, 'a failure was cached as the answer'
         assert 'k2' not in d._ASKED, 'a failed ask was never released'
+        assert d._DOWN_UNTIL > time.time(), 'a failure set no quiet spell'
     finally:
         d.urllib.request.urlopen = real
         d.SUMMARY_MODEL = ''
         d._SUMMARIES.clear()
         d._ASKED.clear()
+        d._DOWN_UNTIL = 0.0
+
+
+def test_the_board_asks_again_once_ollama_comes_back():
+    """Ollama not running is the ordinary case - it is a separate program,
+    and the board does not start it. The old code asked once, cached the
+    nothing it got back as that turn's summary, and never asked again, so a
+    board opened before Ollama stayed blank until it was restarted. It must
+    go quiet for a spell and then try again by itself."""
+    class Answer:
+        def read(self):
+            return json.dumps({'response': 'reading the config'}).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    asks = []
+
+    def dead(*a, **k):
+        asks.append(1)
+        raise OSError('connection refused')
+
+    real, started = d.urllib.request.urlopen, d.threading.Thread
+    d.SUMMARY_MODEL = 'test-model'
+    try:
+        # run the fetch on this thread, so the test never races one
+        d.threading.Thread = lambda target, args, daemon: type(
+            'Now', (), {'start': lambda _s: target(*args)})()
+        d.urllib.request.urlopen = dead
+
+        assert d.summarise('ask', 'said', []) == ''
+        assert asks == [1], 'the first turn never reached Ollama'
+        # still down, so the whole feature holds off rather than retrying
+        assert d.summarise('other', 'said', []) == ''
+        assert asks == [1], 'it kept hammering a dead Ollama'
+
+        # the quiet spell runs out and Ollama is back
+        d._DOWN_UNTIL = 0.0
+        d.urllib.request.urlopen = lambda *a, **k: Answer()
+        assert d.summarise('later', 'said', []) == ''  # answer lands after
+        assert d.summarise('later', 'said', []) == 'reading the config'
+        assert d._DOWN_UNTIL == 0.0, 'a good answer left the board holding off'
+    finally:
+        d.urllib.request.urlopen, d.threading.Thread = real, started
+        d.SUMMARY_MODEL = ''
+        d._SUMMARIES.clear()
+        d._ASKED.clear()
+        d._DOWN_UNTIL = 0.0
 
 
 def test_codex_liveness_is_a_held_lock_not_a_guess():

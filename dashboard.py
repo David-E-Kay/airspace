@@ -82,6 +82,12 @@ SUMMARY_KEEP = 400
 # How long Ollama holds the model in the GPU after a summary. Short, so a
 # board left open overnight is not sitting on VRAM it has stopped using.
 KEEP_ALIVE = '5m'
+# How long the board leaves Ollama alone after a call to it failed.
+# Without this every card on the page would retry on every refresh while
+# Ollama is shut down; with it the board goes quiet for a minute and then
+# tries once more, so starting Ollama after the board fixes the page on
+# its own rather than needing the board restarted.
+RETRY_AFTER_SECONDS = 60
 # The page asks for itself every REFRESH_SECONDS. Going quiet for this long
 # means the window is shut, and the board has nothing left to serve. Well
 # clear of a minute: a browser throttles a hidden window's timers to about one
@@ -345,6 +351,11 @@ def clean_summary(line):
 _SUMMARIES = {}
 _ASKED = set()
 _SUMMARY_LOCK = threading.Lock()
+# Caching a failure as the summary was worse than not caching at all: the
+# card had an answer, the answer was nothing, and it never asked again -
+# so a board opened before Ollama was running stayed blank all day. A
+# failure now parks the feature for RETRY_AFTER_SECONDS instead.
+_DOWN_UNTIL = 0.0
 
 
 def summary_key(asked, said, trail):
@@ -371,9 +382,15 @@ def _fetch_summary(key, asked, said, trail):
             line = json.loads(r.read()).get('response') or ''
     except Exception:
         line = ''  # a model that is missing or down must not break the page
+    global _DOWN_UNTIL
+    answer = clean_summary(line)
     with _SUMMARY_LOCK:
-        _SUMMARIES[key] = clean_summary(line)
         _ASKED.discard(key)
+        if not answer:
+            _DOWN_UNTIL = time.time() + RETRY_AFTER_SECONDS
+            return
+        _DOWN_UNTIL = 0.0
+        _SUMMARIES[key] = answer
         for stale in list(_SUMMARIES)[:-SUMMARY_KEEP]:
             _SUMMARIES.pop(stale, None)
 
@@ -402,7 +419,7 @@ def summarise(asked, said, trail):
     with _SUMMARY_LOCK:
         if key in _SUMMARIES:
             return _SUMMARIES[key]
-        if key in _ASKED:
+        if key in _ASKED or time.time() < _DOWN_UNTIL:
             return ''
         _ASKED.add(key)
     threading.Thread(target=_fetch_summary, args=(key, asked, said, trail),
@@ -1233,8 +1250,16 @@ def render(groups, error=''):
     # The model is read from the environment once, at startup, so this line
     # is the quickest way to tell whether a BOARD_SUMMARY_MODEL actually
     # reached the board or was set in a window it never saw.
-    summaries = f'summaries: {e(SUMMARY_MODEL)}' if SUMMARY_MODEL \
-        else 'summaries: off (set BOARD_SUMMARY_MODEL)'
+    # It used to name the model and stop there, which reads as working when
+    # the model is named but Ollama is not running - the one failure this
+    # line exists to catch.
+    if not SUMMARY_MODEL:
+        summaries = 'summaries: off (set BOARD_SUMMARY_MODEL)'
+    elif time.time() < _DOWN_UNTIL:
+        summaries = (f'summaries: {e(SUMMARY_MODEL)}'
+                     ' &mdash; no answer from Ollama')
+    else:
+        summaries = f'summaries: {e(SUMMARY_MODEL)}'
     parts.append(f'<footer>refreshed {time.strftime("%H:%M:%S")} '
                  f'&middot; every {REFRESH_SECONDS}s &middot; read-only '
                  f'&middot; {summaries}</footer>')
