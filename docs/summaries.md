@@ -44,15 +44,21 @@ or use `setx BOARD_SUMMARY_MODEL <model>` to make it permanent for new
 processes.
 
 Ollama is a separate program that does not start with Windows, so `board.cmd`
-starts it — its tray app, which allows only one of itself, so starting it
-when it is already up does nothing.
+starts it. It starts the server — `ollama serve` — and not the Ollama
+desktop app, which would put its chat window on your screen every time you
+opened the board. Nothing appears: no window, no taskbar button.
 
-No install path is written down anywhere. `board.cmd` asks Windows where
-`ollama` is with `where ollama`, and the tray app sits in the same folder,
-so any install location works as long as the installer put Ollama on your
-PATH — which it does. Set `BOARD_OLLAMA_URL` and nothing is started
-locally at all, on the grounds that you have told the board Ollama lives
-somewhere else.
+It goes through PowerShell because a batch file has no way to start a
+program with no window at all. `start` leaves a console in the taskbar, and
+`start /b` ties Ollama to the launcher's own window, which closes a moment
+later and takes Ollama with it.
+
+No install path is written down anywhere — `ollama` is found on your PATH,
+which its installer sets up, so any install location works. Running it when
+Ollama is already up is harmless: the second copy cannot take the port and
+quits by itself. Set `BOARD_OLLAMA_URL` and nothing is started locally at
+all, on the grounds that you have told the board Ollama lives somewhere
+else.
 
 If Ollama is not found the board still starts, without summaries. Start
 Ollama yourself afterwards and the board picks them up on its own, no

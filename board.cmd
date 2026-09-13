@@ -11,20 +11,25 @@ rem lasts for that window, and never reaches a double-clicked board.
 set BOARD_SUMMARY_MODEL=qwen2.5:1.5b-instruct
 
 rem Ollama is a separate program and does not start with Windows, so the
-rem board starts it. Where it lives is asked of Windows rather than assumed:
-rem the installer puts `ollama` on the PATH, and its tray app sits in the same
-rem folder, so any install location works and none is written down here.
+rem board starts it - the server on its own, not the Ollama desktop app. The
+rem desktop app puts its chat window on your screen every time it opens, which
+rem is not what you asked for by starting a dashboard.
 rem
-rem The tray app, not `ollama serve` - it allows only one of itself, so this
-rem does nothing when Ollama is already up, and it leaves no console window
-rem behind. BOARD_OLLAMA_URL means Ollama is somewhere else entirely, usually
-rem another machine, so nothing is started locally. If Ollama is not found the
-rem board simply starts without it: summaries stay blank, the footer says so,
-rem and the board keeps asking, so starting Ollama later is enough.
+rem Started through PowerShell because batch has no way to launch a program
+rem with no window at all: `start` would leave a console sitting in the
+rem taskbar, and `start /b` would tie Ollama to this window and kill it when
+rem this window closes a moment later.
+rem
+rem `ollama` is found on the PATH, which its installer sets up, so no install
+rem folder is written down here. A second copy cannot take the port and quits
+rem by itself, so this is safe to run when Ollama is already up. The `catch`
+rem covers Ollama not being installed: the board still starts, summaries stay
+rem blank, the footer says so, and it keeps asking - so starting Ollama later
+rem is enough on its own. BOARD_OLLAMA_URL means Ollama is somewhere else,
+rem usually another machine, so nothing is started locally.
 if not defined BOARD_SUMMARY_MODEL goto :board
 if defined BOARD_OLLAMA_URL goto :board
-for /f "delims=" %%I in ('where ollama 2^>nul') do set "OLLAMA_APP=%%~dpIollama app.exe"
-if defined OLLAMA_APP if exist "%OLLAMA_APP%" start "" "%OLLAMA_APP%"
+powershell -NoProfile -WindowStyle Hidden -Command "try { Start-Process -FilePath ollama -ArgumentList serve -WindowStyle Hidden } catch {}"
 
 :board
 start "" pythonw "%~dp0dashboard.py"
