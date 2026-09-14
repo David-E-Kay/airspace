@@ -401,12 +401,13 @@ def test_local_summaries_are_optional_and_never_block_the_page():
             'reading the config'
         assert d.summarise('ask', 'said', ['Read a.py']) == 'reading the config'
         # the turn moved on, so the cached answer must not be reused - and
-        # asking must hand back an empty line rather than wait for one
-        assert d.summarise('ask', 'said', ['Read b.py']) == ''
+        # asking must hand back the waiting line at once rather than wait for
+        # the model
+        assert d.summarise('ask', 'said', ['Read b.py']) == d.SUMMARISING
 
         # a different request is a different turn, however alike the replies
         d._ASKED.clear()
-        assert d.summarise('other', 'said', ['Read a.py']) == ''
+        assert d.summarise('other', 'said', ['Read a.py']) == d.SUMMARISING
 
         # a turn with nothing in it is not worth waking the model for
         d._ASKED.clear()
@@ -508,7 +509,9 @@ def test_the_board_asks_again_once_ollama_comes_back():
             'Now', (), {'start': lambda _s: target(*args)})()
         d.urllib.request.urlopen = dead
 
-        assert d.summarise('ask', 'said', []) == ''
+        # it cannot know Ollama is down until it has tried, so the first
+        # card says it is waiting and the next refresh drops the line
+        assert d.summarise('ask', 'said', []) == d.LOADING_MODEL
         assert asks == [1], 'the first turn never reached Ollama'
         # still down, so the whole feature holds off rather than retrying
         assert d.summarise('other', 'said', []) == ''
@@ -517,7 +520,7 @@ def test_the_board_asks_again_once_ollama_comes_back():
         # the quiet spell runs out and Ollama is back
         d._DOWN_UNTIL = 0.0
         d.urllib.request.urlopen = lambda *a, **k: Answer()
-        assert d.summarise('later', 'said', []) == ''  # answer lands after
+        assert d.summarise('later', 'said', []) == d.LOADING_MODEL
         assert d.summarise('later', 'said', []) == 'reading the config'
         assert d._DOWN_UNTIL == 0.0, 'a good answer left the board holding off'
     finally:
@@ -1115,6 +1118,50 @@ def test_a_session_opened_only_to_read_is_left_off_the_board():
             d.live_sessions, d.transcript_path = real_live, real_path
 
     assert [r['sid'] for r in rows] == ['busy'], rows
+
+
+def test_the_summary_line_says_it_is_waiting_instead_of_going_blank():
+    """A blank line while the model loads reads as a broken feature."""
+    real_model, real_down = d.SUMMARY_MODEL, d._DOWN_UNTIL
+    d.SUMMARY_MODEL, d._DOWN_UNTIL = 'test-model', 0.0
+    key = d.summary_key('q', 'said something', ['Read x'])
+    try:
+        # in flight, nothing answered yet: the wait worth naming is the model
+        d._ASKED.add(key)
+        assert d.summarise('q', 'said something', ['Read x']) == d.LOADING_MODEL
+
+        # once one answer is in, the model is loaded and waits are short
+        d._SUMMARIES['someone else'] = 'fixing the upload retry'
+        assert d.summarise('q', 'said something', ['Read x']) == d.SUMMARISING
+
+        # known-positive: a real answer must still come back as itself, or the
+        # assertions above would pass with every card stuck on a placeholder
+        d._SUMMARIES[key] = 'fixing the upload retry'
+        assert d.summarise('q', 'said something',
+                           ['Read x']) == 'fixing the upload retry'
+
+        # Ollama down is not "loading" - the footer explains that one, and a
+        # card promising a line that is never coming would be a lie
+        d._SUMMARIES.pop(key)
+        d._DOWN_UNTIL = time.time() + 60
+        assert d.summarise('q', 'said something', ['Read x']) == ''
+    finally:
+        d.SUMMARY_MODEL, d._DOWN_UNTIL = real_model, real_down
+        d._ASKED.clear()
+        d._SUMMARIES.clear()
+
+    # and the page has to tell the two apart, or a placeholder reads as prose
+    row = {'state': 'done', 'since': None, 'detail': '', 'says': '',
+           'trail': [], 'warnings': [], 'summary': d.LOADING_MODEL,
+           'folder': 'repo', 'branch': 'main', 'dirty': 0, 'committed': None,
+           'agent': 'claude', 'app': 'desktop', 'model': '', 'sid': 'a',
+           'cwd': r'C:/repo', 'title': 't', 'started': None, 'is_main': True,
+           'pulse': False}
+    page = d.render([('repo', [row])])
+    assert 'says waiting' in page, 'the placeholder is styled as a summary'
+    assert '.says.waiting' in page, 'nothing makes the placeholder look apart'
+    assert 'says waiting' not in d.render(
+        [('repo', [dict(row, summary='fixing the upload retry')])])
 
 
 if __name__ == '__main__':

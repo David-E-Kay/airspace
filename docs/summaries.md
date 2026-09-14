@@ -102,3 +102,17 @@ Anything that does not fit falls back to the main processor and takes tens of
 seconds per line. That does not break the board — the request runs on its own
 thread and the card keeps its plain-text line until an answer arrives — but
 you will rarely see a summary.
+
+## While you wait
+
+The first summary of a session is slow, because Ollama has to load the model
+into the graphics card before it can answer anything. Every one after it takes
+a couple of seconds.
+
+So the summary line says what it is doing rather than sitting blank: *loading
+the local model* until the first answer lands, *summarising* for every wait
+after that, both in grey italics so they do not read as the model's own words.
+
+A board with Ollama switched off shows no summary line at all. It cannot know
+Ollama is down until it has tried, so the first refresh still says it is
+loading; the one after that drops the line, and the footer says why.

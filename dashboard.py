@@ -88,6 +88,14 @@ KEEP_ALIVE = '5m'
 # tries once more, so starting Ollama after the board fixes the page on
 # its own rather than needing the board restarted.
 RETRY_AFTER_SECONDS = 60
+# What the summary line says while the model is being asked. The first answer
+# of a session is slow - Ollama has to load the model into the graphics card
+# first - and a blank line for that long reads as a feature that is broken
+# rather than one that is starting up. Only shown while a request is actually
+# in flight; a board with Ollama switched off shows no line at all, and the
+# footer says why.
+LOADING_MODEL = 'loading the local model…'
+SUMMARISING = 'summarising…'
 # The page asks for itself every REFRESH_SECONDS. Going quiet for this long
 # means the window is shut, and the board has nothing left to serve. Well
 # clear of a minute: a browser throttles a hidden window's timers to about one
@@ -419,12 +427,17 @@ def summarise(asked, said, trail):
     with _SUMMARY_LOCK:
         if key in _SUMMARIES:
             return _SUMMARIES[key]
-        if key in _ASKED or time.time() < _DOWN_UNTIL:
+        if time.time() < _DOWN_UNTIL:
             return ''
+        # Nothing answered yet means the model is still being loaded, which is
+        # the wait worth naming - every one after it is a couple of seconds.
+        waiting = LOADING_MODEL if not _SUMMARIES else SUMMARISING
+        if key in _ASKED:
+            return waiting
         _ASKED.add(key)
     threading.Thread(target=_fetch_summary, args=(key, asked, said, trail),
                      daemon=True).start()
-    return ''
+    return waiting
 
 
 def blocks_of(entry):
@@ -1140,6 +1153,7 @@ h2 { font-size:13px; font-weight:600; margin:18px 0 7px; color:#cfd4dc; }
        color:#565d68; margin-right:7px; }
 .says { margin-top:4px; font-size:11px; color:#7d8590; white-space:nowrap;
         overflow:hidden; text-overflow:ellipsis; }
+.says.waiting { color:#565d68; font-style:italic; }
 .warn-line { margin-top:5px; font-size:11px; color:#ff7b72; }
 .warn-head { font-weight:700; letter-spacing:.05em; text-transform:uppercase;
              font-size:10px; color:#ff9c94; }
@@ -1269,8 +1283,11 @@ def render(groups, error=''):
                 parts.append(f'<div class="detail">{e(r["detail"])}</div>')
             # Both rows are prose about the turn, so each says which it is.
             if r.get('summary'):
-                parts.append('<div class="says"><span class="lbl">turn '
-                             'summary</span>' + e(r['summary']) + '</div>')
+                waiting = (' waiting' if r['summary'] in
+                           (LOADING_MODEL, SUMMARISING) else '')
+                parts.append(f'<div class="says{waiting}">'
+                             '<span class="lbl">turn summary</span>'
+                             + e(r['summary']) + '</div>')
             if r['says']:
                 parts.append('<div class="says"><span class="lbl">last '
                              'message</span>' + e(r['says'][:160]) + '</div>')
