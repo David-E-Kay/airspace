@@ -27,6 +27,36 @@ CLAUDE = Path.home() / '.claude'
 REGISTRY = CLAUDE / 'sessions'
 PROJECTS = CLAUDE / 'projects'
 CODEX = Path.home() / '.codex'
+
+
+def desktop_sessions(home=None):
+    """Where the desktop app keeps one record per session it opened, keyed
+    by the id its own claude:// deep link answers to.
+
+    A session started in a bare terminal never gets a record - not this
+    app's doing, so click-through just skips it.
+
+    %APPDATA%\Claude is the plain answer, and the right one for an ordinary
+    install. A packaged (Store) install virtualises that folder: it is only
+    there for processes the app itself started, and the board is normally
+    started from a shortcut, which left every card unmatched. Such an
+    install keeps the real folder under Packages, so fall back to it.
+
+    That fallback searches for the folder rather than naming the package it
+    sits in: the package folder is named after whoever published the build,
+    which is not ours to predict on someone else's machine.
+    """
+    home = home or Path.home()
+    plain = home / 'AppData' / 'Roaming' / 'Claude' / 'claude-code-sessions'
+    if plain.is_dir():
+        return plain
+    for p in sorted((home / 'AppData' / 'Local' / 'Packages').glob(
+            '*/LocalCache/Roaming/Claude/claude-code-sessions')):
+        return p
+    return plain
+
+
+DESKTOP_SESSIONS = desktop_sessions()
 TAIL_BYTES = 64 * 1024
 # A whole Codex thread is smaller than one Claude transcript, and the turn
 # markers that settle its state sit at the start of the turn, which a 64K
@@ -195,6 +225,25 @@ def live_sessions(registry=REGISTRY, alive=is_alive):
         if not d.get('sessionId') or not d.get('cwd'):
             continue
         out.append(d)
+    return out
+
+
+def local_ids_by_cli_session(root=DESKTOP_SESSIONS):
+    """cliSessionId -> the app's own local_<uuid> id for the same session.
+
+    That local id is what claude://code/continue?session=<id> wants; it is
+    not the id Claude's own registry and transcripts use, so this is the
+    reverse map docs/internals.md describes. Missing entries are normal, not
+    an error - see DESKTOP_SESSIONS.
+    """
+    out = {}
+    for f in root.rglob('local_*.json'):
+        try:
+            d = json.loads(f.read_text(encoding='utf-8'))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if d.get('cliSessionId') and d.get('sessionId'):
+            out[d['cliSessionId']] = d['sessionId']
     return out
 
 
@@ -1000,8 +1049,10 @@ def clashes_for(cwd, session_id='', pid=None):
 
 def collect():
     rows = session_rows()
+    local_ids = local_ids_by_cli_session()
     for r in rows:
         r['pulse'] = note_change(r['sid'], r['state'])
+        r['local_id'] = local_ids.get(r['sid'])
         # Its own row now. It used to overwrite whichever prose line the
         # state happened to use, which left the card unable to say which of
         # the two you were reading.
@@ -1113,6 +1164,7 @@ h2 { font-size:13px; font-weight:600; margin:18px 0 7px; color:#cfd4dc; }
 .card.thinking { border-left-color:#8957e5; }
 .card.clash { border-left-color:#e5534b; }
 .card.pulse { animation:pulse 1.5s ease-in-out infinite; }
+.card.clickable { cursor:pointer; }
 @keyframes pulse {
   0%,100% { box-shadow:0 0 0 0 rgba(230,236,255,0); }
   50%     { box-shadow:0 0 0 4px rgba(230,236,255,.30); }
@@ -1133,6 +1185,7 @@ h2 { font-size:13px; font-weight:600; margin:18px 0 7px; color:#cfd4dc; }
 .triage ul { list-style:none; margin:6px 0 0; padding:0; }
 .triage li { display:flex; gap:9px; align-items:baseline; padding:2px 0;
              color:#e6e6e6; }
+.triage li.jump { cursor:pointer; }
 /* Fixed width, so the titles line up and the labels read as a column. */
 .triage .w { flex:0 0 auto; width:130px; font-size:10px; font-weight:700;
              letter-spacing:.06em; text-transform:uppercase; }
@@ -1238,15 +1291,14 @@ def render(groups, error=''):
             # you which window to go and look in.
             where = ' &middot; '.join(
                 e(x) for x in (r.get('agent', 'claude'), r.get('app')) if x)
-            parts.append(f'<li><span class="w {r["state"]}">'
+            open_attr = (f' onclick="location.href=\'claude://code/continue'
+                         f'?session={e(r["local_id"])}\'"' if r.get('local_id')
+                         else '')
+            parts.append(f'<li{" class=\"jump\"" if open_attr else ""}'
+                         f'{open_attr}><span class="w {r["state"]}">'
                          f'{STATE_WORDS[r["state"]]}</span>{e(r["title"])}'
                          f'<span class="where">{where}</span></li>')
         parts.append('</ul></div>')
-    # No click-through to a session. The app registers claude:// and the
-    # routes exist, but the whole code/ family is gated off in this build -
-    # claude://code/new fires and nothing happens. Even if it were on,
-    # code/continue only accepts "last" or a local_ id, and those ids are
-    # not written to disk anywhere.
     if error:
         parts.append(f'<div class="warn-line">{e(error)}</div>')
     if not groups:
@@ -1258,7 +1310,15 @@ def render(groups, error=''):
             agent = r.get('agent', 'claude')
             cls = 'clash' if r['warnings'] else r['state']
             cls += f' a-{agent}' + (' pulse' if r.get('pulse') else '')
-            parts.append(f'<div class="card {cls}">')
+            # Clicking jumps the desktop app to this session via its own
+            # claude:// deep link - see docs/internals.md. Only sessions the
+            # app itself opened have a local id to jump to.
+            open_attr = (f' onclick="location.href=\'claude://code/continue'
+                         f'?session={e(r["local_id"])}\'"' if r.get('local_id')
+                         else '')
+            if open_attr:
+                cls += ' clickable'
+            parts.append(f'<div class="card {cls}"{open_attr}>')
             parts.append(f'<div class="title">{e(r["title"])}</div>')
             parts.append('<div class="top">')
             if not r['is_main']:

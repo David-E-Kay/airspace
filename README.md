@@ -158,12 +158,13 @@ while: after ten minutes a working card reads "silent 14m". That is a fact,
 not a diagnosis — it fits a session waiting on approval and a session running
 a slow test suite equally well, and the card does not pretend to know which.
 
-There is no click-through to a session either, and not for want of an address.
+There is no click-through to a session yet, but not for want of an address.
 The desktop app registers exactly the right routes, and the board can work out
-the ids they want. The routes sit behind a server-side feature flag that is
-off, and released builds ignore the override that would force it on. The
-wiring is all there; the switch is not ours. [docs/internals.md](docs/internals.md)
-records what the change would be the day it flips.
+the ids they want. Those routes sat behind a server-side feature flag; as of
+2026-09-16 that flag is confirmed on for this account, verified by firing the
+link at a session and watching the app switch to it. The wiring described in
+[docs/internals.md](docs/internals.md) is what building the click-through
+would take - it just hasn't been built here yet.
 
 ## This is not a harness, and that is the whole trade
 

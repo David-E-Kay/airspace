@@ -203,6 +203,64 @@ def test_a_card_labels_its_app_and_its_tool_row_once():
     assert 'summaries: off' in page, page
 
 
+def test_card_jumps_to_the_session_only_when_a_local_id_is_known():
+    """Click-through fires the desktop app's own deep link; a session with no
+    local id (opened in a bare terminal) must render exactly as before."""
+    base = {'agent': 'claude', 'state': 'done', 'title': 'Some session',
+            'folder': 'AlgoTrading', 'is_main': True, 'branch': 'main',
+            'dirty': 0, 'warnings': [], 'pulse': False,
+            'detail': '', 'says': '', 'summary': '', 'trail': [],
+            'since': None, 'last_ts': None}
+
+    linked = dict(base, local_id='local_abc-123')
+    page = d.render([('AlgoTrading', [linked])])
+    assert 'class="card done a-claude clickable"' in page, page
+    assert ("onclick=\"location.href='claude://code/continue"
+            "?session=local_abc-123'\"") in page, page
+
+    page = d.render([('AlgoTrading', [base])])
+    assert 'class="card done a-claude">' in page, page
+    assert 'code/continue' not in page, page
+
+
+def test_desktop_sessions_finds_the_folder_a_packaged_install_hides():
+    """A packaged (Store) install virtualises the app's own %APPDATA%: only
+    processes the app started see the plain folder, and the board is usually
+    started some other way, which left every card unmatched."""
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp)
+        # deliberately not a name starting with Claude: the package folder
+        # is named after the publisher of whichever build is installed, so
+        # the search must not depend on guessing it
+        packaged = (home / 'AppData' / 'Local' / 'Packages' /
+                    'AnthropicPBC.ClaudeDesktop_8wekyb3d8bbwe' / 'LocalCache' /
+                    'Roaming' / 'Claude' / 'claude-code-sessions')
+        packaged.mkdir(parents=True)
+        assert d.desktop_sessions(home) == packaged, d.desktop_sessions(home)
+
+        plain = home / 'AppData' / 'Roaming' / 'Claude' / 'claude-code-sessions'
+        plain.mkdir(parents=True)
+        assert d.desktop_sessions(home) == plain,             'the folder the app writes to must win over the packaged copy'
+
+
+def test_local_ids_reverse_map_reads_the_desktop_apps_own_records():
+    """The desktop app's session files are the only source for the id its
+    own deep link needs - see docs/internals.md."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        nested = root / 'a' / 'b'
+        nested.mkdir(parents=True)
+        (nested / 'local_abc-123.json').write_text(json.dumps(
+            {'sessionId': 'local_abc-123', 'cliSessionId': 'cli-uuid-1'}),
+            encoding='utf-8')
+        # a record missing cliSessionId (or malformed) must not crash the scan
+        (nested / 'local_broken.json').write_text('not json', encoding='utf-8')
+
+        got = d.local_ids_by_cli_session(root)
+
+    assert got == {'cli-uuid-1': 'local_abc-123'}, got
+
+
 def test_title_prefers_a_rename_and_falls_back_to_a_full_scan():
     """The title is what tells two sessions in one project apart, so it must
     survive being written far outside the tail window."""

@@ -166,17 +166,31 @@ row can carry the id the app answers to. The files also carry the app's own
 `title`, `model`, `effort` and `permissionMode` - none of which are in a
 transcript.
 
+That `%APPDATA%` path is a lie to everyone but the app. The Windows build is
+a packaged install, so the folder it writes is really
+`%LOCALAPPDATA%/Packages/<package>/LocalCache/Roaming/Claude/...`, and
+Windows only shows it at the `%APPDATA%` spelling to processes the app itself
+started. A board started from its shortcut is not one of those: it saw an
+empty folder, found no ids, and rendered every card unclickable while a board
+started from an agent's own shell worked. `desktop_sessions()` tries the
+plain path first and falls back to the Packages one, searching for the folder
+rather than naming `<package>` - that name comes from whoever published the
+build that happens to be installed.
+
 The routes are `claude://code/continue?session=<local id>` and
 `claude://code/needs-input`, the second described in the bundle as opening the
-session that has waited longest for a permission answer. Both are guarded by a
-server-side feature gate that is currently off for this account. The bundle's
-own override, `CLAUDE_DEV_FORCE_GATES`, returns an empty set when
-`app.isPackaged` is true, so a released build cannot be talked into it locally.
-Verified on app 1.46388.4.0 with CLI 2.1.260 on 2026-09-08; firing the link
-changed nothing, including the record's own `lastFocusedAt`.
+session that has waited longest for a permission answer. Both were guarded by
+a server-side feature gate. Verified off on app 1.46388.4.0 with CLI 2.1.260 on
+2026-09-08 - firing the link changed nothing, including the record's own
+`lastFocusedAt`. Re-verified **on** on 2026-09-16: firing
+`claude://code/continue?session=<local id>` at a session other than the one
+the app had focused switched the app's foreground window to it, confirmed by
+the user watching the screen. The gate is server-side and account-scoped, not
+tied to a specific app or CLI build, so treat it as live rather than re-check
+per version.
 
-So: do not build the link until a fired deep link is observed to work. A link
-that silently does nothing is worse than no link.
+So: the link works now. Building click-through in `render()` is no longer
+blocked on the gate - see the session card loop at `dashboard.py` ~line 1237.
 
 ## Things that are deliberately absent
 
