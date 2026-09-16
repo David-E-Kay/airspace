@@ -591,6 +591,18 @@ def test_codex_reads_the_turn_markers_and_the_command():
     assert d.read_codex_activity([])['state'] == 'idle'
 
 
+def test_codex_exec_wrapper_extracts_the_real_command():
+    """The computer-use tool names every command 'exec' and buries the real
+    command inside a JS snippet instead of a plain JSON payload."""
+    payload = {'type': 'custom_tool_call', 'name': 'exec',
+               'input': 'const r = await tools.exec_command('
+                        '{"cmd":"git status"});\ntext(r.output);'}
+    assert d.codex_call_label(payload) == 'run git status', \
+        d.codex_call_label(payload)
+    assert d.codex_call_label({'type': 'custom_tool_call', 'name': 'exec'}) \
+        == 'run'
+
+
 def test_codex_title_and_working_folder_come_off_disk():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -615,6 +627,36 @@ def test_codex_title_and_working_folder_come_off_disk():
         assert d.codex_rollout('zzz', root=root) is None
 
     assert d.codex_titles(root=Path(tmp) / 'gone') == {}
+
+
+def test_codex_hides_its_own_guardian_review_threads():
+    """A guardian_review thread is Codex checking its own next action for
+    safety, not a task anyone asked for - it has no business on the board."""
+    if sys.platform != 'win32':
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        locks = root / 'thread-writer-locks'
+        locks.mkdir()
+        real, guard = locks / 'real.lock', locks / 'guard.lock'
+        real.write_text('', encoding='utf-8')
+        guard.write_text('', encoding='utf-8')
+
+        day = root / 'sessions' / '2026' / '09' / '14'
+        day.mkdir(parents=True)
+        (day / 'rollout-2026-09-14T10-00-00-real.jsonl').write_text(json.dumps({
+            'type': 'session_meta', 'payload': {'cwd': r'C:\repos\Thing'},
+        }), encoding='utf-8')
+        (day / 'rollout-2026-09-14T10-05-00-guard.jsonl').write_text(json.dumps({
+            'type': 'session_meta',
+            'payload': {'cwd': r'C:\repos\Thing',
+                        'thread_source': 'guardian_review'},
+        }), encoding='utf-8')
+
+        with open(real, 'r+', encoding='utf-8'), open(guard, 'r+', encoding='utf-8'):
+            rows = d.codex_rows(root=root)
+
+    assert [r['sid'] for r in rows] == ['real'], rows
 
 
 def test_the_gpu_is_given_back_when_the_window_shuts():

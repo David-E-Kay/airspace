@@ -687,6 +687,18 @@ def codex_call_label(payload, limit=26):
             cmd = ' '.join(map(str, cmd))
         cmd = ' '.join(str(cmd).split())
         return ('run ' + cmd)[:limit] if cmd else 'run'
+    if name == 'exec':
+        # The computer-use tool wraps the real command in a JS snippet -
+        # tools.exec_command({"cmd": "..."}) - instead of a plain JSON
+        # `arguments` payload, so the command has to be pulled out of that
+        # JS source text rather than parsed as JSON outright.
+        m = re.search(r'"cmd"\s*:\s*"((?:\\.|[^"\\])*)"', payload.get('input') or '')
+        try:
+            cmd = json.loads('"' + m.group(1) + '"') if m else ''
+        except (json.JSONDecodeError, TypeError):
+            cmd = ''
+        cmd = ' '.join(cmd.split())
+        return ('run ' + cmd)[:limit] if cmd else 'run'
     return name[:limit]
 
 
@@ -745,6 +757,11 @@ def codex_rows(root=CODEX):
         meta = codex_meta(path)
         cwd = meta.get('cwd')
         if not cwd:
+            continue
+        if meta.get('thread_source') == 'guardian_review':
+            # Codex's own background safety check before a risky action,
+            # not a task anyone asked for - nothing on the board can act
+            # on it, so it never belongs on the page.
             continue
         rows.append({
             'agent': 'codex', 'sid': sid, 'cwd': cwd, 'pid': None,
