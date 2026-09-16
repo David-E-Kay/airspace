@@ -12,6 +12,7 @@ import html
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import threading
@@ -1396,11 +1397,29 @@ def open_window(url):
     return 'default browser'
 
 
+def already_running():
+    # Windows lets a second ThreadingHTTPServer bind the same port instead of
+    # erroring (SO_REUSEADDR), so a stale copy can silently eat every request
+    # meant for the fresh one. Ask the port itself before trying to bind it.
+    # A raw connect, not a page fetch: build_page() can be slow enough to
+    # blow past a short timeout and read as "nobody's there" when someone is.
+    try:
+        with socket.create_connection(('127.0.0.1', PORT), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
 def main():
     # 127.0.0.1, not localhost: the server is IPv4-only, and Windows resolves
     # localhost to IPv6 first, costing ~1.9s per page load waiting for that
     # to fail. Measured 3.2s via localhost against 1.3s via 127.0.0.1.
     url = f'http://127.0.0.1:{PORT}/'
+    if already_running():
+        print(f'Airspace already running on {url}')
+        if '--no-browser' not in sys.argv:
+            print('Opened in', open_window(url))
+        return
     server = ThreadingHTTPServer(('127.0.0.1', PORT), Handler)
     print(f'Airspace on {url}   (Ctrl+C to stop)')
     if '--no-browser' not in sys.argv:

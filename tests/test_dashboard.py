@@ -659,6 +659,52 @@ def test_codex_hides_its_own_guardian_review_threads():
     assert [r['sid'] for r in rows] == ['real'], rows
 
 
+def test_a_second_launch_opens_a_window_instead_of_a_second_server():
+    """Windows lets two ThreadingHTTPServers bind the same port at once
+    (SO_REUSEADDR), so the guard has to catch this before binding, not after."""
+    real_connect = d.socket.create_connection
+    real_server_cls = d.ThreadingHTTPServer
+    real_argv = sys.argv[:]
+
+    class FakeSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    try:
+        sys.argv = ['dashboard.py', '--no-browser']
+
+        # someone already answers on the port: must not construct a server
+        d.socket.create_connection = lambda *a, **k: FakeSocket()
+        d.ThreadingHTTPServer = lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError('a second server must never be constructed'))
+        d.main()  # returns quietly instead of raising
+
+        # nothing answers: the real path still has to construct and serve
+        built = []
+
+        class FakeServer:
+            def __init__(self, *a, **k):
+                built.append(a)
+
+            def serve_forever(self):
+                pass
+
+        def dead(*a, **k):
+            raise OSError('connection refused')
+
+        d.socket.create_connection = dead
+        d.ThreadingHTTPServer = FakeServer
+        d.main()
+        assert built, 'a real server must be constructed when nothing answers'
+    finally:
+        d.socket.create_connection = real_connect
+        d.ThreadingHTTPServer = real_server_cls
+        sys.argv = real_argv
+
+
 def test_the_gpu_is_given_back_when_the_window_shuts():
     """A board nobody is looking at must not sit on VRAM. Two halves: the
     page going quiet is what counts as shut, and the unload has to actually
