@@ -5,6 +5,11 @@ Read-only. Reads the live process registry and each session's transcript, asks
 git about each folder, and renders one self-refreshing page. It never writes to
 a session, spawns anything, or plans work.
 
+One exception, and it says so when it happens: on Windows it will name the
+program that opens a claude:// or codex:// link, where that is registered with
+no program behind it and clicking a card would otherwise do nothing at all.
+See mend_link_type().
+
 Single file, stdlib only. Split it when it stops fitting on a screen.
 """
 import hashlib
@@ -19,6 +24,7 @@ import threading
 import time
 import urllib.request
 import webbrowser
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -159,6 +165,7 @@ BROWSERS = [
 if sys.platform == 'win32':
     import ctypes
     import ctypes.wintypes as wintypes
+    import winreg
 
     _K32 = ctypes.WinDLL('kernel32', use_last_error=True)
     _K32.OpenProcess.restype = wintypes.HANDLE
@@ -168,6 +175,12 @@ if sys.platform == 'win32':
         wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
         wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
     _INVALID_HANDLE = ctypes.c_void_p(-1).value
+
+    # Which app owns a link type like codex:// - see app_exe().
+    _SHLWAPI = ctypes.WinDLL('shlwapi')
+    _SHLWAPI.AssocQueryStringW.argtypes = [
+        wintypes.DWORD, wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR,
+        wintypes.LPWSTR, ctypes.POINTER(wintypes.DWORD)]
 
 
 def proc_start(pid):
@@ -258,6 +271,113 @@ def deep_link(row, local_ids):
         return f'codex://threads/{row["sid"]}'
     local = local_ids.get(row['sid'])
     return f'claude://code/continue?session={local}' if local else None
+
+
+def _assoc(scheme, what):
+    """Ask Windows what it associates with <scheme>:// links."""
+    buf = ctypes.create_unicode_buffer(1024)
+    n = wintypes.DWORD(len(buf))
+    # ASSOCF_IS_PROTOCOL
+    if _SHLWAPI.AssocQueryStringW(0x40, what, scheme, None, buf,
+                                  ctypes.byref(n)):
+        return ''
+    return buf.value
+
+
+def app_exe(scheme):
+    """The program Windows would run for a <scheme>:// link.
+
+    Handing the link to Windows is the obvious way to open one, and it is
+    what a browser does. It fails silently when the link type is registered
+    with no program behind it, which is how the Codex install here arrived -
+    see docs/internals.md. So the board finds the program itself and runs it,
+    which needs nothing repaired and changes nothing on the machine.
+
+    Nothing here is written down in advance. Windows is asked for the plain
+    program first, which is the answer for an ordinary install. A packaged
+    (Store) install has no plain answer, but Windows still names the package
+    the link belongs to, and the package's own manifest names its program.
+    Those answers keep working while the link type itself is broken, which is
+    the whole reason this can be fixed from here.
+
+    The package folder is opened by the name Windows just gave, never found
+    by looking: WindowsApps refuses to be listed at all, and the folder name
+    carries a version that changes under us anyway.
+    """
+    exe = _assoc(scheme, 2)  # ASSOCSTR_EXECUTABLE
+    if exe and Path(exe).is_file():
+        return Path(exe)
+    # ASSOCSTR_DELEGATEEXECUTE, '@{<package>?ms-resource://...}'
+    package = _assoc(scheme, 15).lstrip('@{').split('?')[0]
+    if not package:
+        return None
+    folder = Path(os.environ.get('ProgramFiles', r'C:\Program Files'),
+                  'WindowsApps', package)
+    try:
+        root = ET.parse(folder / 'AppxManifest.xml').getroot()
+    except (OSError, ET.ParseError):
+        return None
+    # ASSOCSTR_APPID, '<package family>!<application id>'
+    wanted = _assoc(scheme, 21).partition('!')[2]
+    apps = [a for a in root.iter()
+            if a.tag.endswith('}Application') and a.get('Executable')]
+    for app in sorted(apps, key=lambda a: a.get('Id') != wanted):
+        found = folder / app.get('Executable').replace('/', os.sep)
+        if found.is_file():
+            return found
+    return None
+
+
+def _named_exe(command):
+    """The program a registered open command runs, quoted or not."""
+    if not command:
+        return None
+    rest = command[1:].partition('"')[0] if command.startswith('"') \
+        else command.partition(' ')[0]
+    return Path(rest) if rest else None
+
+
+def mend_link_type(scheme):
+    """Make sure Windows knows which program opens a <scheme>:// link.
+
+    Windows keeps one entry per link type naming the program that opens it.
+    The Codex install here declared `codex` and named no program, so clicking
+    a Codex card did nothing at all - no error, nowhere. See
+    docs/internals.md; the app's own manifest asks for the link type, so this
+    reads as an install that half finished rather than a decision.
+
+    Opening the program ourselves is not a way round it. Handed the link as
+    an argument, the app treats it as a web address and passes it to the
+    browser, so the session never opens. Only Windows can deliver it, and
+    Windows needs the entry. So the board writes the entry, with the program
+    Windows itself named - never a guess.
+
+    Written only when the entry is missing, or names a program that is no
+    longer there, which is what a Codex update leaves behind. An entry that
+    works is left alone, whatever it says. Returns what was written, or None
+    if nothing needed doing.
+    """
+    if sys.platform != 'win32':
+        return None
+    key = rf'Software\Classes\{scheme}\shell\open\command'
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as k:
+            named = _named_exe(winreg.QueryValueEx(k, '')[0])
+    except OSError:
+        named = None
+    if named and named.is_file():
+        return None
+    exe = app_exe(scheme)
+    if not exe:
+        return None
+    try:
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key) as k:
+            winreg.SetValueEx(k, '', 0, winreg.REG_SZ, f'"{exe}" "%1"')
+    except OSError:
+        # A locked-down machine may refuse. The board still works; the cards
+        # for that app just will not jump.
+        return None
+    return exe
 
 
 # --------------------------------------------------------------------------
@@ -1493,6 +1613,12 @@ def main():
         return
     server = ThreadingHTTPServer(('127.0.0.1', PORT), Handler)
     print(f'Airspace on {url}   (Ctrl+C to stop)')
+    # Never silently: this is the one thing the board changes outside itself.
+    for scheme in ('claude', 'codex'):
+        mended = mend_link_type(scheme)
+        if mended:
+            print(f'Told Windows that {scheme}:// links open {mended.name} '
+                  f'- clicking a card had nothing to open before.')
     if '--no-browser' not in sys.argv:
         print('Opened in', open_window(url))
         # Close the window and the board stops, freeing the GPU with it.

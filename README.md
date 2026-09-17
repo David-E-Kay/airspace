@@ -165,11 +165,16 @@ without a link are not clickable: a Claude session started in a bare terminal
 has no id the app answers to, and a Codex tab that has not started a thread
 yet is nothing to jump to.
 
-Codex click-through can be dead on arrival on Windows through no fault of the
-board. The Codex install here claimed the `codex://` link type without saying
-which program opens it, so Windows swallowed every link in silence. See
-[docs/internals.md](docs/internals.md) for what that looks like and how to
-tell.
+Codex click-through arrives broken on Windows through no fault of the board.
+The Codex install here claimed the `codex://` link type without saying which
+program opens it, so Windows swallowed every link in silence - no error, no
+sign the app had been asked. The board mends that at startup and prints a line
+saying it did. It fills the entry in only when it is missing or names a
+program that is gone, never when one already works, and the program comes from
+Windows' own answer rather than a guess. Nothing else on the machine is
+touched, and it needs no administrator rights.
+[docs/internals.md](docs/internals.md) has the whole story, including why
+opening the program directly is not a way round it.
 
 ## This is not a harness, and that is the whole trade
 

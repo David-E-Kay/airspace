@@ -240,6 +240,123 @@ def test_deep_link_names_the_thread_for_codex_and_the_app_id_for_claude():
     assert d.deep_link({'agent': 'claude', 'sid': 'cli-2'}, ids) is None
 
 
+def test_the_program_behind_a_link_is_read_out_of_the_package_windows_names():
+    """Handing a codex:// link to Windows fails silently when the link type
+    is registered with no program behind it, so the board finds the program
+    itself. Windows still names the package and the app inside it, and the
+    package's own manifest names the file - none of it guessed, and the
+    folder is opened by name because WindowsApps refuses to be listed."""
+    if sys.platform != 'win32':
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        package = 'Vendor.Thing_9.9.9.9_x64__abcdefghijklm'
+        folder = Path(tmp) / 'WindowsApps' / package
+        (folder / 'app').mkdir(parents=True)
+        (folder / 'app' / 'Thing.exe').write_bytes(b'')
+        (folder / 'app' / 'Other.exe').write_bytes(b'')
+        (folder / 'AppxManifest.xml').write_text(
+            '<Package xmlns="http://schemas.microsoft.com/appx/manifest/'
+            'foundation/windows10"><Applications>'
+            '<Application Id="Other" Executable="app/Other.exe" />'
+            '<Application Id="Main" Executable="app/Thing.exe" />'
+            '</Applications></Package>', encoding='utf-8')
+
+        answers = {2: '',  # no plain program: that is the broken case
+                   15: '@{%s?ms-resource://Vendor.Thing/Files/x.png}' % package,
+                   21: 'Vendor.Thing_abcdefghijklm!Main'}
+        real_assoc, real_pf = d._assoc, os.environ.get('ProgramFiles')
+        d._assoc = lambda scheme, what: (
+            answers.get(what, '') if scheme == 'thing' else '')
+        os.environ['ProgramFiles'] = tmp
+        try:
+            got = d.app_exe('thing')
+            assert got == folder / 'app' / 'Thing.exe', got
+
+            # the id Windows gave picks the app, not the manifest's order
+            answers[21] = 'Vendor.Thing_abcdefghijklm!Other'
+            assert d.app_exe('thing') == folder / 'app' / 'Other.exe'
+
+            # an ordinary, unpackaged install answers outright
+            answers[2] = str(folder / 'app' / 'Thing.exe')
+            assert d.app_exe('thing') == folder / 'app' / 'Thing.exe'
+
+            # a link type nothing owns must not guess at a program
+            assert d.app_exe('nothing') is None, 'invented a program'
+        finally:
+            d._assoc = real_assoc
+            if real_pf is not None:
+                os.environ['ProgramFiles'] = real_pf
+
+        answers.clear()
+        assert d.app_exe('thing') is None
+
+
+def test_the_link_type_is_mended_only_when_it_points_at_nothing():
+    """A link type registered with no program behind it swallows every click
+    in silence, which is how Codex arrived here. The board fills that in -
+    but it must never overrule an entry that works, whatever it names."""
+    if sys.platform != 'win32':
+        return
+    import winreg
+
+    scheme = 'airspaceselftest'
+    key = rf'Software\Classes\{scheme}\shell\open\command'
+
+    def written():
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key) as k:
+                return winreg.QueryValueEx(k, '')[0]
+        except OSError:
+            return None
+
+    def put(value):
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key) as k:
+            winreg.SetValueEx(k, '', 0, winreg.REG_SZ, value)
+
+    def scrub():
+        for sub in (key, rf'Software\Classes\{scheme}\shell\open',
+                    rf'Software\Classes\{scheme}\shell',
+                    rf'Software\Classes\{scheme}'):
+            try:
+                winreg.DeleteKey(winreg.HKEY_CURRENT_USER, sub)
+            except OSError:
+                pass
+
+    with tempfile.TemporaryDirectory() as tmp:
+        here, gone = Path(tmp) / 'Thing.exe', Path(tmp) / 'Old.exe'
+        here.write_bytes(b'')
+        real = d.app_exe
+        d.app_exe = lambda s: here if s == scheme else None
+        scrub()
+        try:
+            # nothing registered at all: the board fills it in
+            assert d.mend_link_type(scheme) == here
+            assert written() == f'"{here}" "%1"', written()
+
+            # already works: left exactly as it was, even in another program
+            put('"C:\\Windows\\System32\\notepad.exe" "%1"')
+            assert d.mend_link_type(scheme) is None, 'overruled a working entry'
+            assert written() == '"C:\\Windows\\System32\\notepad.exe" "%1"'
+
+            # names a program that is gone - what a Codex update leaves
+            put(f'"{gone}" "%1"')
+            assert d.mend_link_type(scheme) == here, 'left a stale entry alone'
+            assert written() == f'"{here}" "%1"', written()
+
+            # unquoted entries are read too, or every one of them reads stale
+            put(f'{here} "%1"')
+            assert d.mend_link_type(scheme) is None, 'misread an unquoted entry'
+
+            # no program to name: write nothing rather than guess
+            scrub()
+            d.app_exe = lambda s: None
+            assert d.mend_link_type(scheme) is None
+            assert written() is None, 'invented an entry'
+        finally:
+            d.app_exe = real
+            scrub()
+
+
 def test_desktop_sessions_finds_the_folder_a_packaged_install_hides():
     """A packaged (Store) install virtualises the app's own %APPDATA%: only
     processes the app started see the plain folder, and the board is usually

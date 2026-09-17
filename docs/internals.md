@@ -211,19 +211,36 @@ keeps one entry per link type saying which program opens it. On this machine
 app had been asked. Claude's entry names `Claude.exe` and works, which is the
 control that separates "this scheme is broken" from "deep links don't work
 here". Firing the same link from Python, from PowerShell and through Explorer
-all failed identically; the repair is to give that entry the app's own
-executable, `<package>\app\ChatGPT.exe "%1"`.
+all failed identically.
 
-Two things make this worth writing down. The app is not visibly at fault - its
-manifest declares the protocol and its startup log says it registered one - and
-the failure is completely quiet, so a click on a Codex card looks like a bug in
-the board. The tell is the app's Sentry scope at
-`<package>\LocalCache\Roaming\Codex\web\Codex\sentry\scope_v3.json`: its
-breadcrumb trail records `app.second-instance`, `app.browser-window-focus` and
-`[codex-deep-link-navigation] ...` when a link actually arrives. Nothing there
-means the link never reached the app, and the registry entry is where to look.
-Note the path also carries a version number, so a Codex update can break the
-entry again.
+So `mend_link_type()` writes the entry, at startup, once, and says so. It
+writes only when the entry is missing or names a program that is gone - the
+second case is what a Codex update leaves behind, since the path carries a
+version. An entry that resolves is never touched. `app_exe()` supplies the
+program and nothing is guessed: `AssocQueryStringW` still answers
+`ASSOCSTR_DELEGATEEXECUTE` and `ASSOCSTR_APPID` while the link type is broken,
+which name the package and the app inside it, and the package's own
+`AppxManifest.xml` names the file. The package folder is opened by that name,
+never searched for: `WindowsApps` denies a listing outright.
+
+**Opening the program ourselves does not work, and it is worth knowing why
+before trying it again.** Run `ChatGPT.exe codex://threads/<id>` and the app
+treats the argument as a web address and hands it to the default browser - an
+Edge window opens and the session does not. Only the shell delivers a protocol
+activation, and the shell needs the entry. The same goes for
+`os.startfile(exe, arguments=...)`. The alternative is
+`IApplicationActivationManager::ActivateForProtocol`, which is correct and is
+roughly eighty lines of ctypes COM; the eight-line entry does the same job.
+
+The app is not visibly at fault - its manifest declares the protocol and its
+startup log says it registered one. The tell when a link does arrive is the
+app's Sentry scope at
+`<package>\LocalCache\Roaming\Codex\web\Codex\sentry\scope_v3.json`, whose
+breadcrumbs record `app.second-instance`, `app.browser-window-focus` and
+`[codex-deep-link-navigation] ...`. Read it sparingly: a successful navigation
+leaves no breadcrumb at all (only warnings become console breadcrumbs), and
+somebody typing in the app floods the trail within seconds, so its silence
+proves nothing. Watching which window comes to the front is the honest check.
 
 ## Things that are deliberately absent
 
