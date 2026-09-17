@@ -247,6 +247,19 @@ def local_ids_by_cli_session(root=DESKTOP_SESSIONS):
     return out
 
 
+def deep_link(row, local_ids):
+    """The URL that jumps the desktop app straight to this session.
+
+    Codex puts the thread id in the link itself, so the id already on the
+    row is the one it wants. Claude needs the app's own local id instead,
+    which only sessions the app opened have - see docs/internals.md.
+    """
+    if row.get('agent') == 'codex':
+        return f'codex://threads/{row["sid"]}'
+    local = local_ids.get(row['sid'])
+    return f'claude://code/continue?session={local}' if local else None
+
+
 # --------------------------------------------------------------------------
 # transcripts
 # --------------------------------------------------------------------------
@@ -1052,7 +1065,7 @@ def collect():
     local_ids = local_ids_by_cli_session()
     for r in rows:
         r['pulse'] = note_change(r['sid'], r['state'])
-        r['local_id'] = local_ids.get(r['sid'])
+        r['deep_link'] = deep_link(r, local_ids)
         # Its own row now. It used to overwrite whichever prose line the
         # state happened to use, which left the card unable to say which of
         # the two you were reading.
@@ -1291,9 +1304,8 @@ def render(groups, error=''):
             # you which window to go and look in.
             where = ' &middot; '.join(
                 e(x) for x in (r.get('agent', 'claude'), r.get('app')) if x)
-            open_attr = (f' onclick="location.href=\'claude://code/continue'
-                         f'?session={e(r["local_id"])}\'"' if r.get('local_id')
-                         else '')
+            open_attr = (f' onclick="location.href=\'{e(r["deep_link"])}\'"'
+                         if r.get('deep_link') else '')
             parts.append(f'<li{" class=\"jump\"" if open_attr else ""}'
                          f'{open_attr}><span class="w {r["state"]}">'
                          f'{STATE_WORDS[r["state"]]}</span>{e(r["title"])}'
@@ -1311,11 +1323,10 @@ def render(groups, error=''):
             cls = 'clash' if r['warnings'] else r['state']
             cls += f' a-{agent}' + (' pulse' if r.get('pulse') else '')
             # Clicking jumps the desktop app to this session via its own
-            # claude:// deep link - see docs/internals.md. Only sessions the
-            # app itself opened have a local id to jump to.
-            open_attr = (f' onclick="location.href=\'claude://code/continue'
-                         f'?session={e(r["local_id"])}\'"' if r.get('local_id')
-                         else '')
+            # deep link - see docs/internals.md and deep_link() above. Not
+            # every session has one to jump to.
+            open_attr = (f' onclick="location.href=\'{e(r["deep_link"])}\'"'
+                         if r.get('deep_link') else '')
             if open_attr:
                 cls += ' clickable'
             parts.append(f'<div class="card {cls}"{open_attr}>')

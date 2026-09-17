@@ -158,13 +158,18 @@ while: after ten minutes a working card reads "silent 14m". That is a fact,
 not a diagnosis — it fits a session waiting on approval and a session running
 a slow test suite equally well, and the card does not pretend to know which.
 
-There is no click-through to a session yet, but not for want of an address.
-The desktop app registers exactly the right routes, and the board can work out
-the ids they want. Those routes sat behind a server-side feature flag; as of
-2026-09-16 that flag is confirmed on for this account, verified by firing the
-link at a session and watching the app switch to it. The wiring described in
-[docs/internals.md](docs/internals.md) is what building the click-through
-would take - it just hasn't been built here yet.
+Clicking a card jumps the desktop app to that session. Both apps register a
+link of their own for it - `claude://code/continue?session=...` and
+`codex://threads/...` - and the board puts the right one on each card. Cards
+without a link are not clickable: a Claude session started in a bare terminal
+has no id the app answers to, and a Codex tab that has not started a thread
+yet is nothing to jump to.
+
+Codex click-through can be dead on arrival on Windows through no fault of the
+board. The Codex install here claimed the `codex://` link type without saying
+which program opens it, so Windows swallowed every link in silence. See
+[docs/internals.md](docs/internals.md) for what that looks like and how to
+tell.
 
 ## This is not a harness, and that is the whole trade
 

@@ -152,10 +152,13 @@ finds its own registry entry still naming its predecessor — same process, same
 folder, different session id. Without the pid rule every cleared session opens
 by warning about the session it replaced.
 
-## Click-through, if the flag ever flips
+## Click-through
 
-Opening a session from the board is one small change away, and the missing
-piece is not ours to supply.
+Clicking a card jumps the desktop app to that session. `deep_link()` decides
+which link a row gets, and `render()` puts it on the card as an `onclick`. A
+row with no link renders exactly as it did before the feature existed.
+
+### Claude
 
 The desktop app writes one record per session to
 `%APPDATA%/Claude/claude-code-sessions/<a>/<b>/local_<uuid>.json`. Each holds
@@ -189,8 +192,38 @@ the user watching the screen. The gate is server-side and account-scoped, not
 tied to a specific app or CLI build, so treat it as live rather than re-check
 per version.
 
-So: the link works now. Building click-through in `render()` is no longer
-blocked on the gate - see the session card loop at `dashboard.py` ~line 1237.
+### Codex
+
+Codex needs no reverse map: its route is `codex://threads/<threadId>`, and
+that id is the one already on the row, taken from the lock file name. The
+app's own router accepts a plain uuid and nothing else, and `codex_rows()`
+already drops a thread with no rollout file, which is the one case the app
+refuses - it answers such a link with `local_conversation_deep_link_lookup_failed
+... thread not loaded`. That is a blank tab in the app, not a session.
+
+There is no feature gate on the Codex side, but on Windows there is something
+that looks exactly like one.
+
+**A registered link type with no program behind it fails silently.** Windows
+keeps one entry per link type saying which program opens it. On this machine
+`HKCU\Software\Classes\codex` declared the type and named no program, so every
+`codex://` link was swallowed without an error, a log line, or any sign the
+app had been asked. Claude's entry names `Claude.exe` and works, which is the
+control that separates "this scheme is broken" from "deep links don't work
+here". Firing the same link from Python, from PowerShell and through Explorer
+all failed identically; the repair is to give that entry the app's own
+executable, `<package>\app\ChatGPT.exe "%1"`.
+
+Two things make this worth writing down. The app is not visibly at fault - its
+manifest declares the protocol and its startup log says it registered one - and
+the failure is completely quiet, so a click on a Codex card looks like a bug in
+the board. The tell is the app's Sentry scope at
+`<package>\LocalCache\Roaming\Codex\web\Codex\sentry\scope_v3.json`: its
+breadcrumb trail records `app.second-instance`, `app.browser-window-focus` and
+`[codex-deep-link-navigation] ...` when a link actually arrives. Nothing there
+means the link never reached the app, and the registry entry is where to look.
+Note the path also carries a version number, so a Codex update can break the
+entry again.
 
 ## Things that are deliberately absent
 

@@ -203,24 +203,41 @@ def test_a_card_labels_its_app_and_its_tool_row_once():
     assert 'summaries: off' in page, page
 
 
-def test_card_jumps_to_the_session_only_when_a_local_id_is_known():
+def test_card_jumps_to_the_session_only_when_a_deep_link_is_known():
     """Click-through fires the desktop app's own deep link; a session with no
-    local id (opened in a bare terminal) must render exactly as before."""
+    link (opened in a bare terminal) must render exactly as before."""
     base = {'agent': 'claude', 'state': 'done', 'title': 'Some session',
             'folder': 'AlgoTrading', 'is_main': True, 'branch': 'main',
             'dirty': 0, 'warnings': [], 'pulse': False,
             'detail': '', 'says': '', 'summary': '', 'trail': [],
             'since': None, 'last_ts': None}
 
-    linked = dict(base, local_id='local_abc-123')
+    linked = dict(base, deep_link='claude://code/continue?session=local_abc')
     page = d.render([('AlgoTrading', [linked])])
     assert 'class="card done a-claude clickable"' in page, page
     assert ("onclick=\"location.href='claude://code/continue"
-            "?session=local_abc-123'\"") in page, page
+            "?session=local_abc'\"") in page, page
 
     page = d.render([('AlgoTrading', [base])])
     assert 'class="card done a-claude">' in page, page
     assert 'code/continue' not in page, page
+
+
+def test_deep_link_names_the_thread_for_codex_and_the_app_id_for_claude():
+    """Codex takes the thread id straight from the row - the app's route is
+    codex://threads/<uuid>. Claude takes the desktop app's own local id, and
+    a Claude session the app never opened gets no link at all."""
+    ids = {'cli-1': 'local_abc'}
+
+    codex = {'agent': 'codex', 'sid': '01a0ac98-117d-70d1-81fc-1e37455a4689'}
+    assert d.deep_link(codex, ids) == (
+        'codex://threads/01a0ac98-117d-70d1-81fc-1e37455a4689'), d.deep_link(codex, ids)
+
+    claude = {'agent': 'claude', 'sid': 'cli-1'}
+    assert d.deep_link(claude, ids) == (
+        'claude://code/continue?session=local_abc'), d.deep_link(claude, ids)
+
+    assert d.deep_link({'agent': 'claude', 'sid': 'cli-2'}, ids) is None
 
 
 def test_desktop_sessions_finds_the_folder_a_packaged_install_hides():
