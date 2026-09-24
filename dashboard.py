@@ -1288,7 +1288,8 @@ h2 { font-size:13px; font-weight:600; margin:18px 0 7px; color:#cfd4dc; }
    exactly the collision the board exists to show. */
 .card { background:#1c1f25; border:1px solid #282c34; border-left:3px solid #3d444d;
         border-right:3px solid transparent;
-        border-radius:6px; padding:9px 11px; margin-bottom:7px; }
+        border-radius:6px; padding:9px 11px; margin-bottom:7px;
+        transition:background-color .12s, border-color .12s; }
 .card.a-claude { border-right-color:#8a6440; }
 .card.a-codex { border-right-color:#2f7f79; }
 .card.working { border-left-color:#3d8bfd; }
@@ -1298,6 +1299,10 @@ h2 { font-size:13px; font-weight:600; margin:18px 0 7px; color:#cfd4dc; }
 .card.clash { border-left-color:#e5534b; }
 .card.pulse { animation:pulse 1.5s ease-in-out infinite; }
 .card.clickable { cursor:pointer; }
+/* Only the top/bottom border brightens - left/right carry state/app colour
+   and must stay untouched. */
+.card.clickable:hover { background:#232730; border-top-color:#4a5260;
+                        border-bottom-color:#4a5260; }
 @keyframes pulse {
   0%,100% { box-shadow:0 0 0 0 rgba(230,236,255,0); }
   50%     { box-shadow:0 0 0 4px rgba(230,236,255,.30); }
@@ -1315,10 +1320,13 @@ h2 { font-size:13px; font-weight:600; margin:18px 0 7px; color:#cfd4dc; }
 /* The one number most glances at this board were ever after. */
 .triage { margin:0 0 12px; padding:8px 12px; border-radius:6px; font-size:12px;
           background:#241d10; border:1px solid #4a3a16; color:#f0c674; }
-.triage ul { list-style:none; margin:6px 0 0; padding:0; }
-.triage li { display:flex; gap:9px; align-items:baseline; padding:2px 0;
-             color:#e6e6e6; }
+/* Pulled out by the rows' side padding, so the text stays in line with the
+   heading and a hovered row's highlight is even on both sides. */
+.triage ul { list-style:none; margin:6px -6px 0; padding:0; }
+.triage li { display:flex; gap:9px; align-items:baseline; padding:2px 6px;
+             border-radius:4px; color:#e6e6e6; }
 .triage li.jump { cursor:pointer; }
+.triage li.jump:hover { background:#33280f; }
 /* Fixed width, so the titles line up and the labels read as a column. */
 .triage .w { flex:0 0 auto; width:130px; font-size:10px; font-weight:700;
              letter-spacing:.06em; text-transform:uppercase; }

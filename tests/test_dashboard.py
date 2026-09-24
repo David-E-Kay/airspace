@@ -222,6 +222,11 @@ def test_card_jumps_to_the_session_only_when_a_deep_link_is_known():
     assert 'class="card done a-claude">' in page, page
     assert 'code/continue' not in page, page
 
+    # a clickable item highlights on hover so the cursor's "you can click
+    # this" is backed up by the item itself changing
+    assert '.card.clickable:hover' in d.CSS
+    assert '.triage li.jump:hover' in d.CSS
+
 
 def test_deep_link_names_the_thread_for_codex_and_the_app_id_for_claude():
     """Codex takes the thread id straight from the row - the app's route is
