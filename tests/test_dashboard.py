@@ -1444,6 +1444,79 @@ def test_the_summary_line_says_it_is_waiting_instead_of_going_blank():
         [('repo', [dict(row, summary='fixing the upload retry')])])
 
 
+def _load_guard():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        'shared_guard', ROOT / 'hooks' / 'block-shared-worktree.py')
+    guard = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(guard)
+    return guard
+
+
+def test_the_edit_guard_blocks_only_whoever_arrived_second():
+    guard = _load_guard()
+    live = r'c:\repo'
+    wt = r'c:\repo\.claude\worktrees\foo'
+    top_of = str.lower  # each session's cwd is its own folder here
+    t9, t10, t11 = ('2026-09-24T09:00:00+00:00', '2026-09-24T10:00:00+00:00',
+                    '2026-09-24T11:00:00Z')
+
+    def n(top, mine, others):
+        return len(guard.blockers(top, mine, others, top_of=top_of))
+
+    assert n(live, t10, [{'cwd': live, 'started': t9}]) == 1, 'they were first'
+    assert n(live, t10, [{'cwd': live, 'started': t11}]) == 0, 'I was first'
+    # a worktree lives inside the checkout's path but is a different folder
+    assert n(live, t10, [{'cwd': wt, 'started': t9}]) == 0
+    assert n(wt, t10, [{'cwd': live, 'started': t9}]) == 0
+    # unknown on either side: the newcomer yields
+    assert n(live, t10, [{'cwd': live, 'started': None}]) == 1
+    assert n(live, None, [{'cwd': live, 'started': t11}]) == 1
+    # Claude writes +00:00 and Codex writes Z; one second apart must still sort
+    assert n(live, '2026-09-24T10:00:00Z',
+             [{'cwd': live, 'started': '2026-09-24T09:59:59+00:00'}]) == 1
+    assert n(live, t10, []) == 0
+
+
+def test_the_edit_guard_runs_and_stays_out_of_the_way():
+    """Separate process, like the brief: an import that only works from the
+    repo root would otherwise fail open silently and guard nothing."""
+    hook = ROOT / 'hooks' / 'block-shared-worktree.py'
+    with tempfile.TemporaryDirectory() as tmp:
+        subprocess.run(['git', 'init', '-q'], cwd=tmp, capture_output=True)
+        for stdin in (json.dumps({'session_id': 'nobody', 'tool_input':
+                                  {'file_path': os.path.join(tmp, 'x.py')}}),
+                      '', 'not json {{{'):
+            out = subprocess.run([sys.executable, str(hook)], input=stdin,
+                                 capture_output=True, text=True, timeout=60,
+                                 cwd=tempfile.gettempdir())
+            assert out.returncode == 0, (stdin, out.stderr)
+
+
+def test_the_edit_guard_actually_blocks_the_session_it_is_given():
+    """Companion to the check above, which only proves the guard can stay
+    quiet; a guard wired to nothing would pass it forever."""
+    guard = _load_guard()
+    real = d.session_rows, d.live_sessions, sys.stdin, sys.stderr
+    with tempfile.TemporaryDirectory() as tmp:
+        subprocess.run(['git', 'init', '-q'], cwd=tmp, capture_output=True)
+        try:
+            d.live_sessions = lambda: [{'sessionId': 'me', 'pid': 1,
+                                        'startedAt': 1790000000000}]
+            d.session_rows = lambda: [
+                {'sid': 'me', 'pid': 1, 'cwd': tmp, 'started': None},
+                {'sid': 'other', 'pid': 2, 'cwd': tmp, 'agent': 'codex',
+                 'title': 'first one here', 'started': '2026-01-01T00:00:00Z'}]
+            sys.stdin = io.StringIO(json.dumps({'session_id': 'me', 'tool_input':
+                                    {'file_path': os.path.join(tmp, 'x.py')}}))
+            sys.stderr = io.StringIO()
+            code, msg = guard.main(), sys.stderr.getvalue()
+        finally:
+            d.session_rows, d.live_sessions, sys.stdin, sys.stderr = real
+    assert code == 2, msg
+    assert 'codex session "first one here"' in msg, msg
+
+
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_')]
     for t in tests:

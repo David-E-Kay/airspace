@@ -7,11 +7,12 @@
 ![Python 3](https://img.shields.io/badge/python-3-3776AB?logo=python&logoColor=white)
 ![No dependencies](https://img.shields.io/badge/dependencies-none-2ea44f)
 
-Two small tools for anyone running several Claude Code and Codex sessions at
+Small tools for anyone running several Claude Code and Codex sessions at
 once. **The board** shows what every live session is doing and which ones have
 stopped and are waiting on you. **The session-start hook** warns a new session,
 at the moment it opens, that another session is already working in the same
-place.
+place. **The edit guard** backs that warning up: it refuses a file edit from
+whichever session arrived second.
 
 One answers *what is happening right now*. The other answers *is it safe to
 start work here* — before the damage rather than after.
@@ -49,10 +50,11 @@ The design assumes an operator rather than an engineer — someone directing
 several agents across several repositories, who needs to know which one wants
 them next, and who would rather click than type.
 
-The two pieces share one detector. `dashboard.py` finds the live sessions and
+The pieces share one detector. `dashboard.py` finds the live sessions and
 flags the collisions; `hooks/git-workspace-brief.py` calls the same two
-functions, `session_rows()` and `flag_clashes()`, so the page and the warning
-can never disagree about who is running.
+functions, `session_rows()` and `flag_clashes()`, and
+`hooks/block-shared-worktree.py` calls `session_rows()`, so the page, the
+warning and the guard can never disagree about who is running.
 
 ## What you need
 
@@ -101,6 +103,40 @@ Add it to `~/.claude/settings.json`:
 If `dashboard.py` cannot be loaded, the brief says so out loud rather than
 reporting no collisions. Silence would read as "nobody else is here", which is
 the one wrong answer that costs work.
+
+## Wiring up the edit guard
+
+The brief warns once, only the session that just opened, and only as advice
+the agent can talk itself past. A session that arrives later is never
+mentioned to the one already working.
+
+`hooks/block-shared-worktree.py` is the enforcing half. It runs before every
+file edit Claude Code makes. It asks git which working folder the file belongs
+to — the main checkout and each worktree count separately — and asks
+`session_rows()` who else is live there. If another Claude or Codex session
+got there first, the edit is refused, and the agent is told to use a worktree
+or ask you to close the other session. The first session keeps the desk; the
+newcomer moves.
+
+Add it to `~/.claude/settings.json`:
+
+```json
+"PreToolUse": [
+  { "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+    "hooks": [ { "type": "command", "timeout": 15,
+      "command": "python \"<path to this repo>/hooks/block-shared-worktree.py\"" } ] }
+]
+```
+
+What it costs and what it misses:
+
+- About a second per edit inside a git repository; nothing outside one.
+- Edits made through a shell command (`sed -i`, `Set-Content`) are not seen.
+- Codex does not run Claude Code hooks, so Codex is never blocked — only a
+  Claude session that arrives after it.
+- A finished session left open still holds its folder until you close it.
+- It fails open. If it cannot read its input or load `dashboard.py`, the edit
+  goes ahead: a broken guard must never stop unrelated work.
 
 ## Reading the board
 
