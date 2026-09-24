@@ -1301,8 +1301,8 @@ h2 { font-size:13px; font-weight:600; margin:18px 0 7px; color:#cfd4dc; }
 .card.clickable { cursor:pointer; }
 /* Only the top/bottom border brightens - left/right carry state/app colour
    and must stay untouched. */
-.card.clickable:hover { background:#232730; border-top-color:#4a5260;
-                        border-bottom-color:#4a5260; }
+.card.clickable:hover, .card.clickable.hover { background:#232730; border-top-color:#4a5260;
+                                              border-bottom-color:#4a5260; }
 @keyframes pulse {
   0%,100% { box-shadow:0 0 0 0 rgba(230,236,255,0); }
   50%     { box-shadow:0 0 0 4px rgba(230,236,255,.30); }
@@ -1326,7 +1326,7 @@ h2 { font-size:13px; font-weight:600; margin:18px 0 7px; color:#cfd4dc; }
 .triage li { display:flex; gap:9px; align-items:baseline; padding:2px 6px;
              border-radius:4px; color:#e6e6e6; }
 .triage li.jump { cursor:pointer; }
-.triage li.jump:hover { background:#33280f; }
+.triage li.jump:hover, .triage li.jump.hover { background:#33280f; }
 /* Fixed width, so the titles line up and the labels read as a column. */
 .triage .w { flex:0 0 auto; width:130px; font-size:10px; font-weight:700;
              letter-spacing:.06em; text-transform:uppercase; }
@@ -1391,13 +1391,27 @@ def render(groups, error=''):
         # not by reloading. A reload makes Windows redraw the tab icon, and
         # the taskbar button flashes every time. Only <body> is replaced, so
         # this script is not re-run and the scroll position survives.
-        '<script>setInterval(function(){'
+        # The swap also replaces the card under a still mouse, and the
+        # browser only notices it is hovered a moment later - a visible
+        # blink. So the page tracks the mouse and marks that card .hover
+        # before the new body is drawn; the next mouse move clears it.
+        '<script>var mx=-1,my=-1;'
+        'document.addEventListener("mousemove",function(e){'
+        'mx=e.clientX;my=e.clientY;'
+        'var h=document.querySelector(".hover");'
+        'if(h)h.classList.remove("hover");});'
+        'document.documentElement.addEventListener("mouseleave",'
+        'function(){mx=my=-1;});'
+        'setInterval(function(){'
         'fetch(location.href,{cache:"no-store"})'
         '.then(function(r){return r.text()})'
         '.then(function(t){'
         'var p=new DOMParser().parseFromString(t,"text/html");'
         'document.title=p.title;'
-        'document.body.innerHTML=p.body.innerHTML;})'
+        'document.body.innerHTML=p.body.innerHTML;'
+        'var el=mx<0?null:document.elementFromPoint(mx,my);'
+        'el=el&&el.closest(".clickable,.jump");'
+        'if(el)el.classList.add("hover");})'
         '.catch(function(){});'
         f'}}, {REFRESH_SECONDS * 1000});</script>',
         # The tab icon, inline so the board still serves one file and

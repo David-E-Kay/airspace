@@ -226,6 +226,11 @@ def test_card_jumps_to_the_session_only_when_a_deep_link_is_known():
     # this" is backed up by the item itself changing
     assert '.card.clickable:hover' in d.CSS
     assert '.triage li.jump:hover' in d.CSS
+    # the refresh swaps every card out from under a still mouse; the page
+    # re-marks the one under it so the highlight does not blink
+    assert '.card.clickable.hover' in d.CSS
+    assert '.triage li.jump.hover' in d.CSS
+    assert 'elementFromPoint' in page, page
 
 
 def test_deep_link_names_the_thread_for_codex_and_the_app_id_for_claude():
