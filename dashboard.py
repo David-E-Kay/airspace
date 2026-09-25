@@ -1303,6 +1303,10 @@ h2 { font-size:13px; font-weight:600; margin:18px 0 7px; color:#cfd4dc; }
    and must stay untouched. */
 .card.clickable:hover, .card.clickable.hover { background:#232730; border-top-color:#4a5260;
                                               border-bottom-color:#4a5260; }
+/* Marked by the refresh script after its layout read has already settled
+   the card as plain, so a fade here would replay from plain - the blink the
+   mark exists to hide. */
+.card.hover { transition:none; }
 @keyframes pulse {
   0%,100% { box-shadow:0 0 0 0 rgba(230,236,255,0); }
   50%     { box-shadow:0 0 0 4px rgba(230,236,255,.30); }

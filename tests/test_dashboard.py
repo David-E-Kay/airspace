@@ -231,6 +231,9 @@ def test_card_jumps_to_the_session_only_when_a_deep_link_is_known():
     assert '.card.clickable.hover' in d.CSS
     assert '.triage li.jump.hover' in d.CSS
     assert 'elementFromPoint' in page, page
+    # finding that card settles its plain look first, so the hover fade
+    # would replay from plain on every refresh - the page's own mark skips it
+    assert '.card.hover { transition:none; }' in d.CSS
 
 
 def test_deep_link_names_the_thread_for_codex_and_the_app_id_for_claude():
