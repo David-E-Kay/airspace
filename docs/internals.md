@@ -158,6 +158,16 @@ Clicking a card jumps the desktop app to that session. `deep_link()` decides
 which link a row gets, and `render()` puts it on the card as an `onclick`. A
 row with no link renders exactly as it did before the feature existed.
 
+A linked card or strip row highlights on hover (`.card.clickable:hover`,
+`.triage li.jump:hover`). The refresh swaps in a new `<body>`, and the browser
+takes up to half a second to notice the new card under a still mouse, so the
+highlight blinked. The refresh script now remembers the mouse position and
+adds `.hover` to the item under it straight after the swap. Finding that item
+with `elementFromPoint` settles the new card as plain first, so the card's
+hover fade would replay from plain - `.card.hover` turns the fade off for
+that mark. The next mouse move clears `.hover` and ordinary `:hover` takes
+over. Design: `docs/superpowers/specs/2026-09-24-hover-highlight-design.md`.
+
 ### Claude
 
 The desktop app writes one record per session to

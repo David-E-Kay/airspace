@@ -199,7 +199,8 @@ link of their own for it - `claude://code/continue?session=...` and
 `codex://threads/...` - and the board puts the right one on each card. Cards
 without a link are not clickable: a Claude session started in a bare terminal
 has no id the app answers to, and a Codex tab that has not started a thread
-yet is nothing to jump to.
+yet is nothing to jump to. A clickable card, or a row in the "stopped for
+you" strip, lights up under the mouse; one with no link stays plain.
 
 Codex click-through arrives broken on Windows through no fault of the board.
 The Codex install here claimed the `codex://` link type without saying which
