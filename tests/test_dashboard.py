@@ -808,6 +808,42 @@ def test_codex_exec_wrapper_extracts_the_real_command():
         == 'run'
 
 
+def test_codex_labels_every_shape_the_real_logs_use():
+    """Each input below is a shape copied from a real rollout. The exec
+    wrapper is JavaScript, so its command key may be unquoted, may be named
+    `command`, and the call may not be a shell at all. A label of plain
+    `run` for all of them is the bug this guards."""
+    def wrapped(js):
+        return {'type': 'custom_tool_call', 'name': 'exec', 'input': js}
+
+    cases = [
+        # the most common Codex tool by far, and it names the text `command`
+        ({'type': 'function_call', 'name': 'shell_command',
+          'arguments': json.dumps({'command': 'git status',
+                                   'workdir': 'C:\\x', 'timeout_ms': 10000})},
+         'run git status'),
+        # JavaScript object key with no quotes around it
+        (wrapped('text(await tools.exec_command({cmd:"git status",'
+                 '"max_output_tokens":7000}));\n'), 'run git status'),
+        # the wrapper calling the shell tool whose key is `command`
+        (wrapped('const a = await tools.shell_command('
+                 '{"command":"git status"});'), 'run git status'),
+        # JavaScript string escapes: `\\` in the source is one backslash
+        (wrapped(r'tools.exec_command({cmd:"Get-Content C:\\x.md"})'),
+         r'run Get-Content C:\x.md'),
+        # a tool that is not a shell: name it, do not call it `run`
+        (wrapped('const r = await tools.web__run({search_query:[{q:"x"}]});'),
+         'web__run'),
+        (wrapped('const r = await tools.mcp__codex_apps__sites_get_site('
+                 '{project_id:"p"});'), 'sites_get_site'),
+        # a command held in a variable cannot be read from the source text
+        (wrapped('tools.exec_command({cmd,workdir:"C:\\\\x"});'), 'run'),
+    ]
+    bad = [(want, d.codex_call_label(p)) for p, want in cases
+           if d.codex_call_label(p) != want]
+    assert not bad, f'(wanted, got): {bad}'
+
+
 def test_codex_title_and_working_folder_come_off_disk():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

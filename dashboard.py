@@ -774,6 +774,8 @@ def transcript_path(cwd, session_id, projects=PROJECTS):
 
 CODEX_CALLS = ('function_call', 'custom_tool_call', 'web_search_call',
                'local_shell_call')
+# Tools whose whole job is running one shell command.
+CODEX_SHELLS = ('exec_command', 'shell_command', 'shell', 'local_shell')
 
 
 def codex_lock_held(path):
@@ -861,9 +863,11 @@ def codex_call_label(payload, limit=26):
         query = (payload.get('action') or {}).get('query')
         return ('search ' + str(query))[:limit] if query else 'web search'
     name = str(payload.get('name') or kind or '?')
-    if name in ('exec_command', 'shell', 'local_shell'):
+    if name in CODEX_SHELLS:
         try:
-            cmd = json.loads(payload.get('arguments') or '{}').get('cmd', '')
+            args = json.loads(payload.get('arguments') or '{}')
+            # exec_command names the text `cmd`; shell_command names it `command`
+            cmd = args.get('cmd') or args.get('command') or ''
         except (json.JSONDecodeError, TypeError):
             cmd = ''
         if isinstance(cmd, list):
@@ -871,11 +875,22 @@ def codex_call_label(payload, limit=26):
         cmd = ' '.join(str(cmd).split())
         return ('run ' + cmd)[:limit] if cmd else 'run'
     if name == 'exec':
-        # The computer-use tool wraps the real command in a JS snippet -
-        # tools.exec_command({"cmd": "..."}) - instead of a plain JSON
-        # `arguments` payload, so the command has to be pulled out of that
-        # JS source text rather than parsed as JSON outright.
-        m = re.search(r'"cmd"\s*:\s*"((?:\\.|[^"\\])*)"', payload.get('input') or '')
+        # The computer-use tool wraps the real call in a JS snippet -
+        # tools.exec_command({cmd: "..."}) - instead of a plain JSON
+        # `arguments` payload, so the tool and its command have to be pulled
+        # out of that JS source text rather than parsed as JSON outright.
+        src = payload.get('input') or ''
+        call = re.search(r'tools\.(\w+)\s*\(', src)
+        if call and call.group(1) not in CODEX_SHELLS:
+            # Not a shell at all (web search, a patch, a connector): saying
+            # `run` would be a lie, so name the tool.
+            tool = call.group(1)
+            if tool.startswith('mcp__'):
+                tool = tool.split('__')[-1]
+            return tool[:limit]
+        # JS writes the key with or without quotes, so accept both.
+        m = re.search(r'\b(?:cmd|command)\b["\']?\s*:\s*"((?:\\.|[^"\\])*)"',
+                      src[call.end() if call else 0:])
         try:
             cmd = json.loads('"' + m.group(1) + '"') if m else ''
         except (json.JSONDecodeError, TypeError):
