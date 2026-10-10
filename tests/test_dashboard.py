@@ -1277,6 +1277,21 @@ def test_the_strip_says_which_kind_of_stopped_each_session_is():
     assert 'needs your answer' not in solo, solo
 
 
+def test_the_strip_names_the_project_before_each_title():
+    """The strip only showed the session title, so two sessions with similar
+    titles in different projects looked alike. The project name now leads each
+    line in bold, so it is the first thing read."""
+    r = {'agent': 'claude', 'state': 'done', 'title': 'Handoff fix',
+         'folder': 'f', 'is_main': True, 'branch': 'main', 'dirty': 0,
+         'warnings': [], 'pulse': False, 'detail': '', 'says': '',
+         'trail': [], 'since': None, 'last_ts': None, 'app': '',
+         'model': '', 'started': None, 'committed': None}
+
+    page = d.render([('ContextOps', [r])])
+    strip = page.split('<div class="triage">')[1].split('</ul>')[0]
+    assert '<b>ContextOps</b>: Handoff fix' in strip, strip
+
+
 def test_old_uncommitted_work_is_called_out_but_fresh_work_is_not():
     def card(dirty, commit_minutes):
         when = datetime.now(timezone.utc) - timedelta(minutes=commit_minutes)

@@ -1443,7 +1443,8 @@ def render(groups, error=''):
     ]
     # The count goes in the title so Windows shows it on the taskbar button.
     # Most glances at this board only ever needed that one number.
-    waiting = [r for _, rows in groups for r in rows if wants_you(r)]
+    waiting = [(label, r) for label, rows in groups for r in rows
+               if wants_you(r)]
     parts += [
         f'<title>{len(waiting)} waiting &middot; Airspace</title>'
         if waiting else '<title>Airspace</title>',
@@ -1460,7 +1461,8 @@ def render(groups, error=''):
         parts.append(
             f'<div class="triage"><b>{len(waiting)} '
             f'session{"s" if len(waiting) > 1 else ""} stopped for you</b><ul>')
-        for r in sorted(waiting, key=lambda r: PULSE_STATES.index(r['state'])):
+        for label, r in sorted(
+                waiting, key=lambda p: PULSE_STATES.index(p[1]['state'])):
             # Same agent/app pair the card carries, so the strip alone tells
             # you which window to go and look in.
             where = ' &middot; '.join(
@@ -1469,7 +1471,8 @@ def render(groups, error=''):
                          if r.get('deep_link') else '')
             parts.append(f'<li{" class=\"jump\"" if open_attr else ""}'
                          f'{open_attr}><span class="w {r["state"]}">'
-                         f'{STATE_WORDS[r["state"]]}</span>{e(r["title"])}'
+                         f'{STATE_WORDS[r["state"]]}</span>'
+                         f'<span><b>{e(label)}</b>: {e(r["title"])}</span>'
                          f'<span class="where">{where}</span></li>')
         parts.append('</ul></div>')
     if error:
