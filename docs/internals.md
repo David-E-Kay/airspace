@@ -119,6 +119,13 @@ result the agent has not answered yet is `thinking`; and a tool whose entire
 job is handing control back — asking a question, submitting a plan — is
 `asking` even though the log shows a tool call mid-flight.
 
+Claude's desktop app adds one more. Its next-step box is a
+`mcp__ccd_turn__wrap_up` call, and a turn that asks a question there says
+nothing after the call, so the log ends on its tool result - the `thinking`
+shape. `handback_ask()` reads such a result as `asking`, with the question as
+the detail. A wrap_up with only a recap is followed by a closing message, so
+it needs no rule.
+
 **What is it called?** Any stable human-readable label. Claude prefers the
 chat's own title and falls back to the registry's derived name; Codex reads
 its thread titles. `sid[:8]` is an acceptable last resort.
@@ -151,6 +158,19 @@ session-start hook fires, so a session started by clearing the previous one
 finds its own registry entry still naming its predecessor — same process, same
 folder, different session id. Without the pid rule every cleared session opens
 by warning about the session it replaced.
+
+**Helper copies are not neighbours.** Since app 2.42304 the desktop app
+sometimes forks a session it hosts into a second, read-only process
+(`--fork-session --no-session-persistence`, tools limited to reading). It
+writes no transcript, cannot be opened, and edits nothing, but its registry
+entry looks like any other session and carries the parent's
+`hostSessionId`. It showed as a blank card, a false same-worktree warning,
+and a reason for the edit guard to block. `drop_helpers()`, called from
+`live_sessions()`, drops an entry when another live entry shares its
+`hostSessionId` and the app's own record names that other one as the
+session. Because it sits in `live_sessions()`, the board, the session-start
+brief and the edit guard all lose the helper together. A record naming
+neither entry leaves both: a session is only hidden on proof.
 
 ## Click-through
 
@@ -189,6 +209,12 @@ started from an agent's own shell worked. `desktop_sessions()` tries the
 plain path first and falls back to the Packages one, searching for the folder
 rather than naming `<package>` - that name comes from whoever published the
 build that happens to be installed.
+
+App 2.42304 (2026-10-16) moved the records out of both folders, to
+`%LOCALAPPDATA%/Claude-Data/<package>/claude-code-sessions`, and left a
+`.user-data-left.<package>` marker in each old one. The record format did not
+change. `desktop_sessions()` now looks there second, ahead of Packages, which
+another machine may still hold a stale copy of.
 
 The routes are `claude://code/continue?session=<local id>` and
 `claude://code/needs-input`, the second described in the bundle as opening the

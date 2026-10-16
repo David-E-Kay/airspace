@@ -51,14 +51,20 @@ def desktop_sessions(home=None):
     That fallback searches for the folder rather than naming the package it
     sits in: the package folder is named after whoever published the build,
     which is not ours to predict on someone else's machine.
+
+    App 2.42304 moved the records out of both, to
+    %LOCALAPPDATA%/Claude-Data/<package>, leaving only a marker file behind.
+    That is checked before Packages, which may still hold a stale copy.
     """
     home = home or Path.home()
     plain = home / 'AppData' / 'Roaming' / 'Claude' / 'claude-code-sessions'
     if plain.is_dir():
         return plain
-    for p in sorted((home / 'AppData' / 'Local' / 'Packages').glob(
-            '*/LocalCache/Roaming/Claude/claude-code-sessions')):
-        return p
+    local = home / 'AppData' / 'Local'
+    for pattern in ('Claude-Data/*/claude-code-sessions',
+                    'Packages/*/LocalCache/Roaming/Claude/claude-code-sessions'):
+        for p in sorted(local.glob(pattern)):
+            return p
     return plain
 
 
@@ -238,7 +244,35 @@ def live_sessions(registry=REGISTRY, alive=is_alive):
         if not d.get('sessionId') or not d.get('cwd'):
             continue
         out.append(d)
-    return out
+    return drop_helpers(out)
+
+
+def drop_helpers(entries):
+    """Drop the read-only copies the desktop app starts beside a session.
+
+    App 2.42304 forks a session it is hosting into a second process that
+    saves nothing and cannot be opened. Its registry entry carries the same
+    hostSessionId as the real one, so it showed as a blank card, a false
+    same-folder warning, and a reason for the edit guard to block.
+
+    The app's own record says which process is the session. An entry goes
+    only when a sibling is the one the record names: a record naming
+    neither (a stale one, say) leaves both, because a session is only ever
+    hidden on proof. The records are read only when two entries share a
+    host, which is rare.
+    """
+    hosts = {}
+    for d in entries:
+        if d.get('hostSessionId'):
+            hosts.setdefault(d['hostSessionId'], []).append(d)
+    if all(len(v) < 2 for v in hosts.values()):
+        return entries
+    ids = local_ids_by_cli_session()
+    named = {h for h, group in hosts.items()
+             if any(ids.get(d['sessionId']) == h for d in group)}
+    return [d for d in entries
+            if d.get('hostSessionId') not in named
+            or ids.get(d['sessionId']) == d['hostSessionId']]
 
 
 def local_ids_by_cli_session(root=DESKTOP_SESSIONS):
@@ -648,6 +682,27 @@ def last_asked(entries):
 
 
 
+def handback_ask(convo):
+    """The question a turn ended on in the desktop app's next-step box.
+
+    That box is a wrap_up tool call, and a turn that asks there says nothing
+    after it, so the transcript ends on the call's result - the shape that
+    otherwise means the model is composing a reply. Only a call carrying an
+    `ask` ends the turn; one with just a recap is followed by a closing
+    message, which settles the state the ordinary way.
+    """
+    ids = {b.get('tool_use_id') for b in blocks_of(convo[-1])
+           if b.get('type') == 'tool_result'}
+    for e in reversed(convo[:-1]):
+        for b in blocks_of(e):
+            if b.get('type') == 'tool_use' and b.get('id') in ids \
+                    and b.get('name') == 'mcp__ccd_turn__wrap_up':
+                return str((b.get('input') or {}).get('ask') or '')
+        if e['type'] == 'assistant':
+            return ''
+    return ''
+
+
 def read_activity(entries):
     """What the session is doing, plus the trail of tools it has been hitting.
 
@@ -699,6 +754,8 @@ def read_activity(entries):
             # Nothing is running, so there is no action to name. The last
             # message below carries the whole of it.
             detail = ''
+        elif (ask := handback_ask(convo)):
+            state, detail = 'asking', ask
         else:
             state = 'thinking'
             detail = ('tool finished, composing a reply'

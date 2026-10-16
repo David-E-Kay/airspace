@@ -138,6 +138,30 @@ def test_live_sessions_drops_dead_processes():
     assert [s['sessionId'] for s in alive] == ['aaa'], alive
 
 
+def test_live_sessions_hides_the_apps_helper_copies():
+    """App 2.42304 starts a read-only fork beside a session, under the same
+    hostSessionId, that saves nothing and cannot be opened. The app's own
+    record says which entry is the real session; with no record naming
+    either, both stay - a session is only hidden on proof."""
+    real_ids = d.local_ids_by_cli_session
+    with tempfile.TemporaryDirectory() as tmp:
+        reg = Path(tmp)
+        for pid, sid, host in ((1, 'real', 'local_h'), (2, 'helper', 'local_h'),
+                               (3, 'x1', 'local_s'), (4, 'x2', 'local_s'),
+                               (5, 'solo', None)):
+            (reg / f'{pid}.json').write_text(json.dumps(
+                {'pid': pid, 'sessionId': sid, 'cwd': r'C:\repo',
+                 'hostSessionId': host}), encoding='utf-8')
+        try:
+            d.local_ids_by_cli_session = lambda *a: {'real': 'local_h'}
+            alive = d.live_sessions(registry=reg, alive=lambda e: True)
+        finally:
+            d.local_ids_by_cli_session = real_ids
+
+    assert sorted(s['sessionId'] for s in alive) == \
+        ['real', 'solo', 'x1', 'x2'], alive
+
+
 def test_clashes_flag_shared_folder_and_shared_branch():
     def row(cwd, repo, branch):
         return {'cwd': cwd, 'repo': repo, 'branch': branch, 'warnings': []}
@@ -390,6 +414,22 @@ def test_desktop_sessions_finds_the_folder_a_packaged_install_hides():
         assert d.desktop_sessions(home) == plain,             'the folder the app writes to must win over the packaged copy'
 
 
+def test_desktop_sessions_follows_the_app_out_to_claude_data():
+    """App 2.42304 moved its records to %LOCALAPPDATA%/Claude-Data/<package>/
+    and left only a marker file in both old folders, so every card went
+    unclickable."""
+    with tempfile.TemporaryDirectory() as tmp:
+        home = Path(tmp)
+        # what the move leaves behind: the old folders exist, records don't
+        (home / 'AppData' / 'Roaming' / 'Claude').mkdir(parents=True)
+        (home / 'AppData' / 'Local' / 'Packages' / 'Claude_pzs8sxrjxfjjc' /
+         'LocalCache' / 'Roaming' / 'Claude').mkdir(parents=True)
+        moved = (home / 'AppData' / 'Local' / 'Claude-Data' /
+                 'Claude_pzs8sxrjxfjjc' / 'claude-code-sessions')
+        moved.mkdir(parents=True)
+        assert d.desktop_sessions(home) == moved, d.desktop_sessions(home)
+
+
 def test_local_ids_reverse_map_reads_the_desktop_apps_own_records():
     """The desktop app's session files are the only source for the id its
     own deep link needs - see docs/internals.md."""
@@ -485,6 +525,31 @@ def test_asking_is_told_apart_from_merely_being_finished():
     # known-positive: an ordinary tool in the same position is still work
     got = d.read_activity(turn('Read', {'file_path': 'a.py'}))
     assert got['state'] == 'working', got['state']
+
+
+def test_the_desktop_question_box_reads_as_asking():
+    """The app's next-step box is a wrap_up call, and a turn that asks there
+    ends on its tool result with nothing said after - which read as a reply
+    still being composed."""
+    def ended(inp):
+        return [{'type': 'assistant', 'timestamp': '2026-10-16T10:00:00Z',
+                 'message': {'content': [
+                     {'type': 'text', 'text': 'Here is the plan.'},
+                     {'type': 'tool_use', 'id': 't1',
+                      'name': 'mcp__ccd_turn__wrap_up', 'input': inp}]}},
+                {'type': 'user', 'timestamp': '2026-10-16T10:00:01Z',
+                 'message': {'content': [{'type': 'tool_result',
+                                          'tool_use_id': 't1',
+                                          'content': 'Shown.'}]}}]
+
+    got = d.read_activity(ended({'recap': 'Found it.', 'ask': 'Go ahead?'}))
+    assert got['state'] == 'asking', got['state']
+    assert got['detail'] == 'Go ahead?', got['detail']
+
+    # known-positive: a recap with no question is followed by a closing
+    # message, so until that arrives the reply really is being composed
+    got = d.read_activity(ended({'recap': 'Found it.'}))
+    assert got['state'] == 'thinking', got['state']
 
 
 def test_powershell_trail_shows_the_command_not_the_variable():
@@ -1579,6 +1644,45 @@ def test_the_edit_guard_actually_blocks_the_session_it_is_given():
             d.session_rows, d.live_sessions, sys.stdin, sys.stderr = real
     assert code == 2, msg
     assert 'codex session "first one here"' in msg, msg
+
+
+def test_the_edit_guard_ignores_the_apps_helper_copy():
+    """A helper fork shares its parent's hostSessionId and edits nothing, so
+    it must not hold the folder against anyone - here, against the very
+    session it was copied from, restarted after it. A genuine neighbour that
+    got there first still blocks."""
+    guard = _load_guard()
+    real = (d.live_sessions, d.local_ids_by_cli_session, sys.stdin, sys.stderr)
+    real_live = d.live_sessions
+    with tempfile.TemporaryDirectory() as tmp, \
+            tempfile.TemporaryDirectory() as regdir:
+        subprocess.run(['git', 'init', '-q'], cwd=tmp, capture_output=True)
+        reg = Path(regdir)
+
+        def entry(pid, sid, host, started):
+            (reg / f'{pid}.json').write_text(json.dumps(
+                {'pid': pid, 'sessionId': sid, 'cwd': tmp,
+                 'hostSessionId': host, 'startedAt': started}), encoding='utf-8')
+
+        def run():
+            sys.stdin = io.StringIO(json.dumps({'session_id': 'me', 'tool_input':
+                                    {'file_path': os.path.join(tmp, 'x.py')}}))
+            sys.stderr = io.StringIO()
+            return guard.main(), sys.stderr.getvalue()
+
+        try:
+            d.live_sessions = lambda: real_live(registry=reg, alive=lambda e: True)
+            d.local_ids_by_cli_session = lambda *a: {'me': 'local_me',
+                                                     'other': 'local_other'}
+            entry(1, 'me', 'local_me', 1790000005000)
+            entry(2, 'helper', 'local_me', 1790000001000)
+            helper_only = run()
+            entry(3, 'other', 'local_other', 1790000000000)
+            with_neighbour = run()
+        finally:
+            d.live_sessions, d.local_ids_by_cli_session, sys.stdin, sys.stderr = real
+    assert helper_only[0] == 0, helper_only[1]
+    assert with_neighbour[0] == 2, 'a real neighbour must still block'
 
 
 if __name__ == '__main__':
