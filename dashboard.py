@@ -1322,6 +1322,26 @@ def span(ts):
     return f'{mins // (60 * 24)} days'
 
 
+# Same fixed window the handoff-buttons mod counts down in each session.
+CACHE_TTL_MINUTES = 60  # ponytail: subscription window, fixed; an API-key session's 5-minute cache would read as warm here
+
+
+def cache_light(r):
+    """How long a stopped Claude session's prompt cache has left, as a light.
+
+    The cache is read on every reply, so its hour starts at `since`, the last
+    reply. Codex caches on its own terms, so it gets no light at all.
+    """
+    mins = minutes_since(r.get('since'))
+    if r.get('agent', 'claude') != 'claude' or mins is None:
+        return ''
+    left = CACHE_TTL_MINUTES - mins
+    colour = 'red' if left < 10 else 'yellow' if left <= 20 else 'green'
+    words = f'{left} mins remaining' if left > 0 else 'expired'
+    return (f'<span class="cache">Cache state '
+            f'<span class="cache-light {colour}"></span> -- {words}</span>')
+
+
 def ago(ts):
     if not ts:
         return '—'
@@ -1411,6 +1431,12 @@ h2 { font-size:13px; font-weight:600; margin:18px 0 7px; color:#cfd4dc; }
 .triage .where { margin-left:auto; padding-left:10px; font-size:10px;
                  letter-spacing:.06em; text-transform:uppercase;
                  color:#8a8f98; white-space:nowrap; }
+.triage .cache { flex:0 0 auto; font-size:11px; color:#c9ccd1; white-space:nowrap; }
+.cache-light { display:inline-block; width:9px; height:9px; border-radius:50%;
+               vertical-align:-1px; margin:0 2px; }
+.cache-light.green { background:#6fcf7f; }
+.cache-light.yellow { background:#f0c674; }
+.cache-light.red { background:#e06c6c; }
 .age { font-size:11px; color:#6f7684; }
 .state .quiet { font-weight:400; letter-spacing:0; text-transform:none;
                 color:#e3b341; }
@@ -1530,6 +1556,7 @@ def render(groups, error=''):
                          f'{open_attr}><span class="w {r["state"]}">'
                          f'{STATE_WORDS[r["state"]]}</span>'
                          f'<span><b>{e(label)}</b>: {e(r["title"])}</span>'
+                         f'{cache_light(r)}'
                          f'<span class="where">{where}</span></li>')
         parts.append('</ul></div>')
     if error:

@@ -1357,6 +1357,42 @@ def test_the_strip_names_the_project_before_each_title():
     assert '<b>ContextOps</b>: Handoff fix' in strip, strip
 
 
+def test_the_strip_shows_how_long_each_claude_cache_has_left():
+    """A stopped Claude session is cheap to pick back up for an hour after its
+    last reply, while its prompt cache is warm. The strip shows the time left
+    with a traffic light, so the session about to go cold is the one you see."""
+    def row(agent, title, mins_ago):
+        since = (datetime.now(timezone.utc)
+                 - timedelta(minutes=mins_ago, seconds=10)).isoformat()
+        return {'agent': agent, 'state': 'done', 'title': title,
+                'folder': 'f', 'is_main': True, 'branch': 'main', 'dirty': 0,
+                'warnings': [], 'pulse': False, 'detail': '', 'says': '',
+                'trail': [], 'since': since, 'last_ts': since, 'app': '',
+                'model': '', 'started': None, 'committed': None}
+
+    page = d.render([('app', [row('claude', 'green one', 26),
+                              row('claude', 'yellow one', 45),
+                              row('claude', 'red one', 55),
+                              row('claude', 'cold one', 70),
+                              row('codex', 'codex one', 5)])])
+    strip = page.split('<div class="triage">')[1].split('</ul>')[0]
+    lines = {l.split('</b>: ')[1].split('<')[0]: l
+             for l in strip.split('<li>')[1:]}
+    assert 'cache-light green' in lines['green one'], lines['green one']
+    assert 'Cache state' in lines['green one'], lines['green one']
+    assert '-- 34 mins remaining' in lines['green one'], lines['green one']
+    assert 'cache-light yellow' in lines['yellow one'], lines['yellow one']
+    assert '-- 15 mins remaining' in lines['yellow one'], lines['yellow one']
+    assert 'cache-light red' in lines['red one'], lines['red one']
+    assert '-- 5 mins remaining' in lines['red one'], lines['red one']
+    assert '-- expired' in lines['cold one'], lines['cold one']
+    # Codex caches on OpenAI's terms, not this hour, so it gets no light
+    assert 'Cache state' not in lines['codex one'], lines['codex one']
+    # it follows the project and title, before the app
+    g = lines['green one']
+    assert g.index('green one') < g.index('Cache state') < g.index('class="where"'), g
+
+
 def test_old_uncommitted_work_is_called_out_but_fresh_work_is_not():
     def card(dirty, commit_minutes):
         when = datetime.now(timezone.utc) - timedelta(minutes=commit_minutes)
