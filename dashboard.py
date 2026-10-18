@@ -703,6 +703,25 @@ def handback_ask(convo):
     return ''
 
 
+def cache_window(convo):
+    """Minutes the session's prompt cache lasts: 60, or 5.
+
+    A subscription writes the hour-long cache, except past the usage limit,
+    where the same session drops to five minutes until the limit resets. Each
+    reply records which one it wrote, so the last reply that wrote any says
+    which window the session is in now. A subagent's replies are its own.
+    """
+    for e in reversed(convo):
+        if e['type'] != 'assistant' or e.get('isSidechain'):
+            continue
+        c = ((e.get('message') or {}).get('usage') or {}).get('cache_creation') or {}
+        if c.get('ephemeral_5m_input_tokens'):
+            return 5
+        if c.get('ephemeral_1h_input_tokens'):
+            return 60
+    return 60
+
+
 def read_activity(entries):
     """What the session is doing, plus the trail of tools it has been hitting.
 
@@ -769,6 +788,7 @@ def read_activity(entries):
 
     return {'state': state, 'detail': detail, 'since': since,
             'trail': trail[-6:], 'last_ts': last_ts, 'model': model,
+            'cache_ttl': cache_window(convo),
             'says': headline(says, 160),
             # The card shows `says`, one trimmed line. The model gets the
             # whole reply and the request - it is reading, not displaying.
@@ -1322,20 +1342,17 @@ def span(ts):
     return f'{mins // (60 * 24)} days'
 
 
-# Same fixed window the handoff-buttons mod counts down in each session.
-CACHE_TTL_MINUTES = 60  # ponytail: subscription window, fixed; an API-key session's 5-minute cache would read as warm here
-
-
 def cache_light(r):
     """How long a stopped Claude session's prompt cache has left, as a light.
 
-    The cache is read on every reply, so its hour starts at `since`, the last
-    reply. Codex caches on its own terms, so it gets no light at all.
+    The cache is read on every reply, so its window starts at `since`, the last
+    reply. Codex caches on its own terms, so it gets no light at all. A
+    five-minute cache is under the red line from the moment it is written.
     """
     mins = minutes_since(r.get('since'))
     if r.get('agent', 'claude') != 'claude' or mins is None:
         return ''
-    left = CACHE_TTL_MINUTES - mins
+    left = r.get('cache_ttl', 60) - mins
     colour = 'red' if left < 10 else 'yellow' if left <= 20 else 'green'
     words = f'{left} mins remaining' if left > 0 else 'expired'
     return (f'<span class="cache">Cache state '

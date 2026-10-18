@@ -1393,6 +1393,35 @@ def test_the_strip_shows_how_long_each_claude_cache_has_left():
     assert g.index('green one') < g.index('Cache state') < g.index('class="where"'), g
 
 
+def test_the_cache_window_comes_from_the_last_reply():
+    """A subscription caches for an hour, but not always: past the usage limit
+    the same session drops to five minutes, then goes back. Each reply records
+    which window it wrote, so the last reply that wrote one is the answer."""
+    def reply(five, hour, side=False):
+        return {'type': 'assistant', 'timestamp': '2026-10-17T10:00:00Z',
+                'isSidechain': side,
+                'message': {'content': [{'type': 'text', 'text': 'ok'}],
+                            'usage': {'cache_creation': {
+                                'ephemeral_5m_input_tokens': five,
+                                'ephemeral_1h_input_tokens': hour}}}}
+    read = lambda *es: d.read_activity(list(es))['cache_ttl']
+    assert read(reply(0, 500)) == 60
+    assert read(reply(0, 500), reply(400, 0)) == 5
+    assert read(reply(400, 0), reply(0, 500)) == 60
+    # a reply that only read the cache says nothing; the one before decides
+    assert read(reply(400, 0), reply(0, 0)) == 5
+    # a subagent's reply is not the session's cache
+    assert read(reply(0, 500), reply(400, 0, side=True)) == 60
+    # nothing recorded at all: assume the hour, as before
+    assert read(reply(0, 0)) == 60
+
+    since = (datetime.now(timezone.utc)
+             - timedelta(minutes=2, seconds=10)).isoformat()
+    r = {'agent': 'claude', 'since': since, 'cache_ttl': 5}
+    assert '-- 3 mins remaining' in d.cache_light(r), d.cache_light(r)
+    assert 'cache-light red' in d.cache_light(r), d.cache_light(r)
+
+
 def test_old_uncommitted_work_is_called_out_but_fresh_work_is_not():
     def card(dirty, commit_minutes):
         when = datetime.now(timezone.utc) - timedelta(minutes=commit_minutes)
