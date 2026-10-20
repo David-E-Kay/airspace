@@ -259,16 +259,89 @@ def test_the_page_server_refuses_requests_that_name_another_host():
 
 ---
 
-### Task 5: "same file" warning across worktrees (item 5) — PROVISIONAL
+### Task 5: "same file" warning across worktrees (item 5)
 
-Detail to be filled in just before dispatch, against the tree as Tasks 2-4 leave it.
+Written against the tree at `2024cea` (70 checks passing).
 
-- **Purpose:** two live sessions in different worktrees of one repo that both changed the same file versus trunk get the existing red warning, head `same file`, text naming the other agent and the first shared file plus "and N more" (spec Goal 5; David: "same alarm formatting just with the appropriate language").
-- **Protects against:** two worktrees silently editing the same file until merge time.
-- **Rough shape:** a new function called from `collect()` after `flag_clashes(rows)`, never from `flag_clashes` itself (both hooks share that and must stay fast). Per qualifying folder: merge-base of `HEAD` and trunk, `git diff --name-only <base>`, plus untracked files from `git status --porcelain`. Trunk found as `hooks/git-workspace-brief.py:62-63` does it. Repos with only one live folder cost nothing.
-- **Decide at detail time:** whether "same file" also shows when "same branch" already does (builder's call per spec); whether the page build time grows enough to need a short per-folder cache (measure before/after, spec Risk 2).
-- **Test approach:** a throwaway repo with one real worktree (`git worktree add`), as in `tests/test_dashboard.py:1150-1154`; companion assertion that disjoint changes produce no warning.
-- **Files:** `dashboard.py`, `tests/test_dashboard.py`, `README.md` (one line beside the other two collision warnings).
+**Files:**
+- Modify: `dashboard.py` — two new functions placed directly after `flag_clashes` (`:1164-1189`): `changed_files(cwd) -> set` and `flag_shared_files(rows) -> rows`. One new call in `collect()` (`:1341`), on the line after `flag_clashes(rows)` (`:1353`).
+- Modify: `README.md` — the "A red card is a collision" paragraph (`:175-177`): add one sentence for *Same file*.
+- Test: `tests/test_dashboard.py` — one new test, placed after the last test that uses `flag_clashes`.
+
+**Decisions (controller rulings, binding):**
+- Called from `collect()` only. Never from `flag_clashes` or `clashes_for` — both hooks call those and must stay fast.
+- Two folders whose rows share the same `branch` value get no "same file" warning between them: "same branch" already covers that pair (spec: add "same file" only when it names something new). In practice git refuses one branch in two worktrees, so this only bites on `(detached)`.
+- No cache. Step 5 measures; only if one `collect()` grows by more than 0.5 s on David's real board, report it as a concern instead of adding one.
+
+**Interfaces (existing, verbatim):**
+- `def git(cwd, *args, timeout=15):` — returns stripped stdout, or `None` on any failure (`dashboard.py:1121`).
+- Rows carry `cwd`, `agent` (`'claude'`/`'codex'`, may be missing → treat as `'claude'`, as `flag_clashes` does at `:1176`), `repo` (normcased git common dir; for non-git folders it is the folder itself and `branch` is `''`), `branch`, `warnings` (list of `(head, text)` tuples).
+- Trunk: `hooks/git-workspace-brief.py:62-63` — `git symbolic-ref --short refs/remotes/origin/HEAD`, take the part after the last `/`, else `'main'`.
+
+- [ ] **Step 1: Write the failing test**
+
+```python
+def test_two_worktrees_that_changed_the_same_file_are_both_warned():
+    """Two worktrees of one repo editing the same file clash only at merge
+    time, long after anyone could have stopped it. git sees it now."""
+    with tempfile.TemporaryDirectory() as tmp:
+        main, wt = Path(tmp) / 'main', Path(tmp) / 'wt'
+        main.mkdir()
+        run = lambda cwd, *a: subprocess.run(['git', *a], cwd=cwd,
+                                             capture_output=True)
+        run(main, 'init', '-q', '-b', 'main')
+        run(main, 'config', 'user.email', 'a@b.c')
+        run(main, 'config', 'user.name', 'T')
+        for name in ('a.txt', 'b.txt', 'c.txt', 'd.txt'):
+            (main / name).write_text('x\n')
+        run(main, 'add', '.')
+        run(main, 'commit', '-q', '-m', 'x')
+        run(main, 'worktree', 'add', '-q', str(wt), '-b', 'feat')
+
+        def rows():
+            return [{'cwd': str(main), 'agent': 'claude', 'warnings': [],
+                     **d.git_info(main)},
+                    {'cwd': str(wt), 'agent': 'codex', 'warnings': [],
+                     **d.git_info(wt)}]
+
+        # disjoint: main edits b.txt, the worktree edits a.txt -> no warning
+        (main / 'b.txt').write_text('main\n')
+        (wt / 'a.txt').write_text('feat\n')
+        got = d.flag_shared_files(rows())
+        assert [r['warnings'] for r in got] == [[], []], got
+
+        # committed on the branch, uncommitted on trunk, and an untracked
+        # file both created: all three count
+        run(wt, 'commit', '-q', '-am', 'feat')
+        (main / 'a.txt').write_text('main\n')
+        (main / 'c.txt').write_text('main\n')
+        (wt / 'c.txt').write_text('feat\n')
+        (main / 'new.txt').write_text('1\n')
+        (wt / 'new.txt').write_text('2\n')
+        mine, theirs = d.flag_shared_files(rows())
+        assert [h for h, _ in mine['warnings']] == ['same file'], mine
+        assert [h for h, _ in theirs['warnings']] == ['same file'], theirs
+        text = mine['warnings'][0][1]
+        assert 'codex' in text and 'a.txt' in text and 'and 2 more' in text, text
+        assert 'claude' in theirs['warnings'][0][1]
+
+        # one live folder in the repo costs nothing and warns nothing
+        solo = rows()[:1]
+        assert d.flag_shared_files(solo)[0]['warnings'] == []
+```
+
+Expected text for `mine` (the trunk folder): `a codex session in another worktree has also changed a.txt and 2 more, so the two will clash when merged` — the shared set is `{a.txt, c.txt, new.txt}`.
+
+- [ ] **Step 2: Run it, confirm it fails** with `AttributeError: module 'dashboard' has no attribute 'flag_shared_files'`, raised at the first `d.flag_shared_files` call. A failure anywhere earlier (git setup, `git_info`) is not RED: fix the test setup first.
+
+- [ ] **Step 3: Implement**
+  - `changed_files(cwd)`: trunk as above; `base = git(cwd, 'merge-base', 'HEAD', trunk)`; if `base` is falsy return `set()` (degrade silently, like `git()`). Paths = `git(cwd, 'diff', '--name-only', '-z', base)` split on `'\0'` plus `git(cwd, 'ls-files', '--others', '--exclude-standard', '-z')` split on `'\0'`, empties dropped, `None` treated as `''`. Use `-z` so non-ASCII names and spaces are not quoted. Docstring says why: repo-relative paths compare across worktrees; `diff <base>` covers committed + staged + unstaged.
+  - `flag_shared_files(rows)`: group rows with a truthy `branch` by `repo`, then by `os.path.normcase(cwd)`. Skip repos with fewer than two folders. Call `changed_files` once per folder (first row's `cwd`). For each folder A, collect every other folder B in the same repo whose branch differs from A's and whose changed set intersects A's; union those shared paths and B's agents. If any: append to every row in A `('same file', 'a {who} session in another worktree has also changed {first}{more}, so the two will clash when merged')` where `who = ' and '.join(sorted(agents))`, `first = sorted(shared)[0]`, `more = f' and {len(shared) - 1} more'` when `len(shared) > 1` else `''`. Return `rows`.
+  - `collect()`: `flag_shared_files(rows)` on the line after `flag_clashes(rows)`, with a one-line comment saying it is here and not in `flag_clashes` because the hooks share that one.
+- [ ] **Step 4: Run the full suite** → `71 checks passed`. Then mutation check: copy `dashboard.py` aside, make `changed_files` ignore untracked files (drop the `ls-files` part), confirm the test goes red on the `and 2 more` assert, then restore from the copy (never `git checkout`).
+- [ ] **Step 5: Measure.** `python -c "import time,dashboard as d; t=time.perf_counter(); d.collect(); print(time.perf_counter()-t)"` three times with the call in, three with it commented out (restore from a file copy). Put the six numbers in the report.
+- [ ] **Step 6: README** — after the *Same branch* sentence at `README.md:177`, add: `*Same file* — a session in another worktree of the same repository has changed a file this one has changed too, so the two will clash when merged.`
+- [ ] **Step 7: Commit** — `git commit -m "Warn when two worktrees have changed the same file"`
 
 ---
 
