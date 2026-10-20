@@ -236,3 +236,17 @@ found a signal.
 **Decision rule outcome:** item 1 dropped unless a non-disk signal is accepted.
 Untested candidate: an approved shell command runs as a child process of the
 session's process, which exists only after approval.
+
+**Decided 2026-10-20: item 1 dropped** (David: "we can drop it"). The
+child-process idea was not tried. The README's "Two honest limits" paragraph
+stays as it is.
+
+AOS re-checked the same day against its current code (commit `cc4ed67`,
+`plugin/monitor.mjs` ~328-372). It has not solved this. `PermissionRequest`
+and `Notification` set `wait = true`. Only the next `PreToolUse`,
+`PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop` or
+`StopFailure` clears it. After Allow, the next of those is `PostToolUse` when
+the command finishes. AOS mostly uses `wait` to mute its "stuck" alarm, so a
+late clear costs it little. Not measured here: when `PreToolUse` fires
+relative to the prompt. Claude Code's docs put it before the permission
+dialog, and our test did not log it.

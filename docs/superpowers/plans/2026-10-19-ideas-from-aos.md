@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add five things to Airspace: hide key-like strings on cards, an `error` state for API-error stops, a Host/Origin check on the page server, a "same file" warning across worktrees, and (only if Task 1 finds a signal) a "needs your approval" state.
+**Goal:** Add four things to Airspace: hide key-like strings on cards, an `error` state for API-error stops, a Host/Origin check on the page server, and a "same file" warning across worktrees. (Item 1, "needs your approval", was dropped after Task 1 — see the spec's "Task 1 results".)
 
-**Architecture:** Everything except item 1's hook lands in the single `dashboard.py` as plain functions, matching the file's existing style. Item 1 adds one fail-open hook script under `hooks/`. Tests stay in `tests/test_dashboard.py` as plain `test_*` functions with bare asserts.
+**Architecture:** Everything lands in the single `dashboard.py` as plain functions, matching the file's existing style. Tests stay in `tests/test_dashboard.py` as plain `test_*` functions with bare asserts.
 
 **Tech Stack:** Python 3 stdlib only, Windows, git CLI.
 
@@ -18,8 +18,8 @@
 - Every new test is run and seen to FAIL for the intended reason before the code it guards is written.
 - Run tests with `python tests/test_dashboard.py` from the worktree (prints `ok  <name>` per test, then `N checks passed`; any failure raises). Baseline today: `65 checks passed`.
 - Docstrings and comments explain *why*, in the voice of the surrounding code (see `read_activity`'s docstring, `dashboard.py:725-743`).
-- `PULSE_STATES` order, once all items land: `('asking', 'approval', 'error', 'done')`. Without item 1: `('asking', 'error', 'done')`.
-- No Codex support for items 1 and 2 (spec, Non-goals).
+- `PULSE_STATES` order, once all items land: `('asking', 'error', 'done')`.
+- No Codex support for item 2 (spec, Non-goals).
 
 ## Existing patterns (cite these, don't invent new ones)
 
@@ -39,25 +39,12 @@
 
 ---
 
-### Task 1: Hands-on check — can item 1 be built? (orchestrator + David, NOT dispatched)
+### Task 1: Hands-on check — DONE 2026-10-20, item 1 DROPPED
 
-This is a manual check with David watching, run by the orchestrating session. It decides whether Task 6 exists. No product code.
-
-**Files (all throwaway, in the session scratchpad, never in the repo):**
-- Create: `<scratchpad>/permcheck/.claude/settings.json` — registers `PermissionRequest` and `Notification` hooks for this folder only, each running `log-hook.py`.
-- Create: `<scratchpad>/permcheck/log-hook.py` — appends `{"t": <ISO UTC now>, **<stdin JSON>}` as one line to `<scratchpad>/permcheck/hook-log.jsonl`; any error → exit 0.
-- Create: `<scratchpad>/permcheck/watch.py <transcript> <desktop-record>` — every 0.5 s, logs to `watch-log.txt` the time and what changed: new transcript lines (their `type`, and `timestamp` if any) and, for the desktop record JSON, each top-level key whose value changed (old → new, trimmed).
-
-- [ ] **Step 1: Ask David to approve the scratch folder's hook settings.** It is persistent configuration, but only inside a throwaway folder; `~/.claude/settings.json` is not touched.
-- [ ] **Step 2: Case A (ask mode).** David opens a desktop Code session in `<scratchpad>/permcheck`, permission mode that asks, and asks it to run `powershell -c "Start-Sleep 20; 'done'"`. Start `watch.py` on that session's transcript and its desktop record (find it with `desktop_sessions()` in `dashboard.py:38`, file `local_<id>.json`). David notes the clock time when the prompt appears and when he clicks Allow. The 20-second sleep separates "approved" from "finished".
-- [ ] **Step 3: Case B (auto mode).** Same session, switched to auto mode, a command auto mode approves on its own (e.g. `git status`). Note the time.
-- [ ] **Step 4: Read the logs and record the answers in the spec** (new section "Task 1 results", dated):
-  - (i) Did `PermissionRequest`, or `Notification` with `notification_type: permission_prompt`, fire in case A?
-  - (ii) Did anything land in `hook-log.jsonl` in case B? (It must not.)
-  - (iii) Did anything on disk change within ~2 s of the Allow click, well before the sleep ended? Name it exactly (file, key, old → new).
-  - (iv) Which transcript lines were written between the hook firing and the answer?
-- [ ] **Step 5: Decide.** Item 1 goes ahead only if (i) yes, (ii) nothing, and (iii) found a signal. Otherwise mark item 1 dropped in the spec, delete Task 6 from this plan, and tell David in one line. Tasks 2-5 go ahead either way.
-- [ ] **Step 6: Delete `<scratchpad>/permcheck`.** Commit the spec update (with David's OK on commits, see Gate 1 question).
+The permission hook fires in desktop sessions, but nothing on disk changes when the
+user clicks Allow: the transcript and the desktop record stay silent until the
+approved command finishes. Full results in the spec, "Task 1 results". David
+dropped item 1 on 2026-10-20. Do not build it. Tasks 2-5 remain.
 
 ---
 
@@ -147,7 +134,7 @@ Call sites — redact **before** any trimming:
 
 **Interfaces:**
 - Consumes: nothing new.
-- Produces: state string `'error'`; `PULSE_STATES == ('asking', 'error', 'done')`; `STATE_WORDS['error'] == 'stopped on an error'`. Task 6 inserts `'approval'` after `'asking'`.
+- Produces: state string `'error'`; `PULSE_STATES == ('asking', 'error', 'done')`; `STATE_WORDS['error'] == 'stopped on an error'`.
 
 Real record shape (local transcript, v2.1.275) — `content` is a list holding one text block, so the entry IS in `convo`:
 `{"type":"assistant","isApiErrorMessage":true,"error":"rate_limit","apiErrorStatus":429,"quotaLimits":{"resetsAt":1789938000,...},"message":{"model":"<synthetic>","content":[{"type":"text","text":"You've hit your ..."}],...}}`
@@ -282,17 +269,6 @@ Detail to be filled in just before dispatch, against the tree as Tasks 2-4 leave
 - **Decide at detail time:** whether "same file" also shows when "same branch" already does (builder's call per spec); whether the page build time grows enough to need a short per-folder cache (measure before/after, spec Risk 2).
 - **Test approach:** a throwaway repo with one real worktree (`git worktree add`), as in `tests/test_dashboard.py:1150-1154`; companion assertion that disjoint changes produce no warning.
 - **Files:** `dashboard.py`, `tests/test_dashboard.py`, `README.md` (one line beside the other two collision warnings).
-
----
-
-### Task 6: "needs your approval" (item 1) — PROVISIONAL, CONDITIONAL on Task 1
-
-Exists only if Task 1 Step 5 says go. Detail written from Task 1's recorded signal.
-
-- **Purpose:** a Claude session waiting on a permission prompt shows `approval` / "needs your approval", in the strip and glowing like `asking`.
-- **Rough shape:** new fail-open hook `hooks/note-permission-prompt.py` (style model: `hooks/block-shared-worktree.py`; no `dashboard.py` import, no git) writing `{"ts": ...}` to `~/.claude/airspace/approval/<session_id>.json`. The board shows `approval` when the row is `working`, the note exists, the note is newer than the last user/assistant entry's timestamp (not `last_ts`), **and** Task 1's approval signal has not fired since the note. `PULSE_STATES` becomes `('asking', 'approval', 'error', 'done')`.
-- **Must not:** show a stale "needs your approval" while an approved command runs (spec anti-goal).
-- **Files:** `hooks/note-permission-prompt.py`, `dashboard.py`, `tests/test_dashboard.py`, `README.md` (hook wiring section like the two existing ones; rewrite "Two honest limits").
 
 ---
 
