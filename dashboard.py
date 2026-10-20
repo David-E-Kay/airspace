@@ -635,8 +635,9 @@ def _fetch_summary(key, asked, said, trail):
         line = ''  # a model that is missing or down must not break the page
     global _DOWN_UNTIL
     # the prompt above stays raw (it never leaves the machine), but this line
-    # is painted on the card
-    answer = redact(clean_summary(line))
+    # is painted on the card. Redact first: clean_summary cuts to 110, and a
+    # key cut in half no longer looks like one.
+    answer = clean_summary(redact(line))
     with _SUMMARY_LOCK:
         _ASKED.discard(key)
         if not answer:

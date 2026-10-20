@@ -1766,6 +1766,10 @@ def test_key_like_strings_are_hidden_on_cards():
     codex = {'type': 'function_call', 'name': 'shell_command',
              'arguments': json.dumps({'command': f'curl -u {key}'})}
     assert 'Ab1Ab1' not in d.codex_call_label(codex, limit=80)
+    # the computer-use tool's JS wrapper is a second shell path
+    wrapped = {'type': 'custom_tool_call', 'name': 'exec',
+               'input': 'tools.exec_command({cmd: "curl -u ' + key + '"})'}
+    assert 'Ab1Ab1' not in d.codex_call_label(wrapped, limit=80)
     for word in ('ghp_' + 'a1B2' * 5, 'xoxb-' + '12345678ab', 'AKIA' + 'ABCDEFGH12345678',
                  'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc'):
         assert d.redact(f'x {word} y') == 'x [redacted] y', word
@@ -1781,6 +1785,40 @@ def test_key_like_strings_are_hidden_on_cards():
                  'pip install sk-learn', 'skeleton-directory-name-that-is-long',
                  'test_key_like_strings_are_hidden_on_cards_and_more'):
         assert d.redact(safe) == safe, safe
+
+
+def test_summary_line_is_redacted_before_it_is_trimmed():
+    """The summary is cut to 110 characters. A key that straddles the cut is
+    left as a fragment too short to recognise, so redact must run first."""
+    class Fake:
+        def __init__(self, text):
+            self.text = text
+
+        def read(self):
+            return json.dumps({'response': self.text}).encode('utf-8')
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    # 85 characters of prose, then a 36-character run: 25 of them fit under
+    # the 110 cut, which is under the 32 a bare run needs to be recognised
+    line = 'word ' * 17 + 'Ab1' * 12
+    real, real_model = d.urllib.request.urlopen, d.SUMMARY_MODEL
+    d.SUMMARY_MODEL = 'test-model'
+    try:
+        d.urllib.request.urlopen = lambda *a, **k: Fake(line)
+        d._fetch_summary('k-straddle', 'ask', 'said', [])
+        shown = d._SUMMARIES['k-straddle']
+        assert 'Ab1Ab1' not in shown and '[redacted]' in shown, shown
+    finally:
+        d.urllib.request.urlopen = real
+        d.SUMMARY_MODEL = real_model
+        d._SUMMARIES.clear()
+        d._ASKED.clear()
+        d._DOWN_UNTIL = 0.0
 
 
 if __name__ == '__main__':
