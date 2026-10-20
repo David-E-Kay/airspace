@@ -1189,6 +1189,60 @@ def flag_clashes(rows):
     return rows
 
 
+def changed_files(cwd):
+    """Every file this folder's work differs from trunk by, as repo-relative
+    paths, so the sets from two worktrees of one repo can be compared.
+
+    `diff <base>` against the fork point covers committed, staged and
+    unstaged edits in one go; only brand-new files need asking for
+    separately. -z keeps odd names (spaces, non-ASCII) from being quoted."""
+    head = git(cwd, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD')
+    trunk = head.rsplit('/', 1)[-1] if head else 'main'
+    base = git(cwd, 'merge-base', 'HEAD', trunk)
+    if not base:
+        return set()
+    out = (git(cwd, 'diff', '--name-only', '-z', base) or '') + '\0' + \
+          (git(cwd, 'ls-files', '--others', '--exclude-standard', '-z') or '')
+    return {p for p in out.split('\0') if p}
+
+
+def flag_shared_files(rows):
+    """Mark the collision that is a prediction: two worktrees of one repo
+    that have each changed the same file will clash when the second one
+    merges, long after anyone could have stopped it. Costs a few git calls
+    per folder, so it runs from collect() and not from flag_clashes, which
+    the hooks share and which must stay fast.
+
+    Two folders on one branch are left out: 'same branch' already says that."""
+    repos = {}
+    for r in rows:
+        if r['branch']:
+            folders = repos.setdefault(r['repo'], {})
+            folders.setdefault(os.path.normcase(r['cwd']), []).append(r)
+    for folders in repos.values():
+        if len(folders) < 2:
+            continue
+        changed = {k: changed_files(rs[0]['cwd']) for k, rs in folders.items()}
+        for key, group in folders.items():
+            shared, agents = set(), set()
+            for other, others in folders.items():
+                if other == key or others[0]['branch'] == group[0]['branch']:
+                    continue
+                both = changed[key] & changed[other]
+                if both:
+                    shared |= both
+                    agents |= {o.get('agent', 'claude') for o in others}
+            if not shared:
+                continue
+            more = f' and {len(shared) - 1} more' if len(shared) > 1 else ''
+            text = (f"a {' and '.join(sorted(agents))} session in another"
+                    f" worktree has also changed {sorted(shared)[0]}{more},"
+                    ' so the two will clash when merged')
+            for r in group:
+                r['warnings'].append(('same file', text))
+    return rows
+
+
 _PREV_STATE = {}
 
 
@@ -1351,6 +1405,7 @@ def collect():
                                  r.get('says_full') or r['says'] or r['detail'],
                                  r['trail'])
     flag_clashes(rows)
+    flag_shared_files(rows)  # here, not in flag_clashes: the hooks share that one
 
     groups = {}
     for r in rows:

@@ -175,6 +175,8 @@ thing.
 **A red card is a collision.** *Same worktree* — another session is editing the
 same files, and whoever saves last wins. *Same branch* — another session in a
 different folder saves to this branch too, so the two sets of changes will mix.
+*Same file* — a session in another worktree of the same repository has changed
+a file this one has changed too, so the two will clash when merged.
 
 **A session you only opened to read is not on the board.** The desktop app
 starts a real process the moment you click into an old chat, so reading one

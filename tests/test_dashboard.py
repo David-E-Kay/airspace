@@ -192,6 +192,58 @@ def test_clashes_flag_shared_folder_and_shared_branch():
     assert all(not r['warnings'] for r in unrelated), unrelated
 
 
+def test_two_worktrees_that_changed_the_same_file_are_both_warned():
+    """Two worktrees of one repo editing the same file clash only at merge
+    time, long after anyone could have stopped it. git sees it now."""
+    with tempfile.TemporaryDirectory() as tmp:
+        main, wt = Path(tmp) / 'main', Path(tmp) / 'wt'
+        main.mkdir()
+        # no hooks: a machine-wide pre-commit hook refuses the throwaway
+        # identity below, and an unmade commit would fail this test confusingly
+        run = lambda cwd, *a: subprocess.run(
+            ['git', '-c', f'core.hooksPath={os.devnull}', *a], cwd=cwd,
+            capture_output=True)
+        run(main, 'init', '-q', '-b', 'main')
+        run(main, 'config', 'user.email', 'a@b.c')
+        run(main, 'config', 'user.name', 'T')
+        for name in ('a.txt', 'b.txt', 'c.txt', 'd.txt'):
+            (main / name).write_text('x\n')
+        run(main, 'add', '.')
+        run(main, 'commit', '-q', '-m', 'x')
+        run(main, 'worktree', 'add', '-q', str(wt), '-b', 'feat')
+
+        def rows():
+            return [{'cwd': str(main), 'agent': 'claude', 'warnings': [],
+                     **d.git_info(main)},
+                    {'cwd': str(wt), 'agent': 'codex', 'warnings': [],
+                     **d.git_info(wt)}]
+
+        # disjoint: main edits b.txt, the worktree edits a.txt -> no warning
+        (main / 'b.txt').write_text('main\n')
+        (wt / 'a.txt').write_text('feat\n')
+        got = d.flag_shared_files(rows())
+        assert [r['warnings'] for r in got] == [[], []], got
+
+        # committed on the branch, uncommitted on trunk, and an untracked
+        # file both created: all three count
+        run(wt, 'commit', '-q', '-am', 'feat')
+        (main / 'a.txt').write_text('main\n')
+        (main / 'c.txt').write_text('main\n')
+        (wt / 'c.txt').write_text('feat\n')
+        (main / 'new.txt').write_text('1\n')
+        (wt / 'new.txt').write_text('2\n')
+        mine, theirs = d.flag_shared_files(rows())
+        assert [h for h, _ in mine['warnings']] == ['same file'], mine
+        assert [h for h, _ in theirs['warnings']] == ['same file'], theirs
+        text = mine['warnings'][0][1]
+        assert 'codex' in text and 'a.txt' in text and 'and 2 more' in text, text
+        assert 'claude' in theirs['warnings'][0][1]
+
+        # one live folder in the repo costs nothing and warns nothing
+        solo = rows()[:1]
+        assert d.flag_shared_files(solo)[0]['warnings'] == []
+
+
 def test_render_survives_a_broken_collect(monkey=None):
     """The page must say what went wrong rather than showing nothing."""
     page = d.render([], error='BoomError: git vanished')
