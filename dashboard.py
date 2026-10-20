@@ -1195,15 +1195,20 @@ def changed_files(cwd):
 
     `diff <base>` against the fork point covers committed, staged and
     unstaged edits in one go; only brand-new files need asking for
-    separately. -z keeps odd names (spaces, non-ASCII) from being quoted."""
+    separately. Without -z git escapes non-ASCII names to plain ASCII, the
+    same way in every worktree. -z would hand back raw UTF-8 bytes that git()
+    cannot decode under this machine's codepage."""
     head = git(cwd, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD')
     trunk = head.rsplit('/', 1)[-1] if head else 'main'
     base = git(cwd, 'merge-base', 'HEAD', trunk)
     if not base:
         return set()
-    out = (git(cwd, 'diff', '--name-only', '-z', base) or '') + '\0' + \
-          (git(cwd, 'ls-files', '--others', '--exclude-standard', '-z') or '')
-    return {p for p in out.split('\0') if p}
+    # ls-files alone lists only beneath the folder it runs in, relative to
+    # it; ':/' and --full-name make it repo-wide and repo-relative, as diff is
+    out = (git(cwd, 'diff', '--name-only', base) or '') + '\n' + \
+          (git(cwd, 'ls-files', '--others', '--exclude-standard',
+               '--full-name', ':/') or '')
+    return {p for p in out.splitlines() if p}
 
 
 def flag_shared_files(rows):

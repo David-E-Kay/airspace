@@ -232,12 +232,23 @@ def test_two_worktrees_that_changed_the_same_file_are_both_warned():
         (wt / 'c.txt').write_text('feat\n')
         (main / 'new.txt').write_text('1\n')
         (wt / 'new.txt').write_text('2\n')
+        # a name outside ASCII must not break the board or compare unequal
+        (main / 'Ð.txt').write_text('1\n')
+        (wt / 'Ð.txt').write_text('2\n')
         mine, theirs = d.flag_shared_files(rows())
         assert [h for h, _ in mine['warnings']] == ['same file'], mine
         assert [h for h, _ in theirs['warnings']] == ['same file'], theirs
         text = mine['warnings'][0][1]
-        assert 'codex' in text and 'a.txt' in text and 'and 2 more' in text, text
+        # git quotes the non-ASCII name, and the quote sorts before 'a'
+        assert 'codex' in text and 'and 3 more' in text, text
         assert 'claude' in theirs['warnings'][0][1]
+
+        # a session started in a subfolder sees the same repo-wide,
+        # repo-relative set, not just the untracked files beneath it
+        (wt / 'sub').mkdir()
+        (wt / 'sub' / 'deep.txt').write_text('3\n')
+        assert d.changed_files(wt / 'sub') == d.changed_files(wt)
+        assert 'sub/deep.txt' in d.changed_files(wt / 'sub')
 
         # one live folder in the repo costs nothing and warns nothing
         solo = rows()[:1]
