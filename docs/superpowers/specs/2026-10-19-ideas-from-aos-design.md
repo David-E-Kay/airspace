@@ -211,3 +211,28 @@ server:
 2. **Item 5 cost.** Two extra git calls per qualifying folder per page build.
    Measure the page build before and after; if it grows noticeably, cache per
    folder for a short time.
+
+## Task 1 results (2026-10-20)
+
+Desktop-app session in ask mode, Claude Code v2.1.x, command
+`powershell -c "Start-Sleep 20; 'done'"`, David clicked Allow ~5 s after the
+prompt appeared. Case B (auto mode) was not run: it only mattered if (iii)
+found a signal.
+
+- (i) **Fires.** `PermissionRequest` fired 0.23 s after the `tool_use` line
+  was written (00:16:23.675 → 00:16:23.906 UTC), carrying `session_id`,
+  `tool_name`, `tool_input`, `permission_mode`. `Notification` with
+  `notification_type: "permission_prompt"` followed 6 s later.
+- (iii) **No signal at approval.** Between the `tool_use` line (00:16:23) and
+  the `tool_result` (00:16:55, i.e. after the 20 s sleep) the transcript got
+  no lines at all, and the desktop record (`local_<id>.json`) did not change.
+  The record's first change was at turn end (`completedTurns`,
+  `postTurnSummary`, `lastTurnReport`).
+- (iv) Nothing lands between the note and the answer.
+- Side finding: the hook's `transcript_path` was 267 characters long, and
+  Python's plain `open()` failed on it (no long-path support on this machine);
+  `\?\` prefix works. `tail_entries` would read such a session as empty.
+
+**Decision rule outcome:** item 1 dropped unless a non-disk signal is accepted.
+Untested candidate: an approved shell command runs as a child process of the
+session's process, which exists only after approval.
