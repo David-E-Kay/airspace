@@ -255,6 +255,58 @@ def test_two_worktrees_that_changed_the_same_file_are_both_warned():
         assert d.flag_shared_files(solo)[0]['warnings'] == []
 
 
+def test_changed_files_survives_renames_diff_config_and_a_remote_only_trunk():
+    """Three ways the set used to come back too small without any error."""
+    def repo(tmp):
+        main = Path(tmp) / 'main'
+        main.mkdir()
+        # no hooks: see the test above
+        run = lambda cwd, *a: subprocess.run(
+            ['git', '-c', f'core.hooksPath={os.devnull}', *a], cwd=cwd,
+            capture_output=True)
+        run(main, 'init', '-q', '-b', 'main')
+        run(main, 'config', 'user.email', 'a@b.c')
+        run(main, 'config', 'user.name', 'T')
+        (main / 'sub').mkdir()
+        for name in ('a.txt', 'sub/s.txt'):
+            (main / name).write_text('x\n')
+        run(main, 'add', '.')
+        run(main, 'commit', '-q', '-m', 'x')
+        return main, run
+
+    # both worktrees move one file, to different names: only the shared
+    # source path shows the clash, so a rename has to report its source
+    with tempfile.TemporaryDirectory() as tmp:
+        main, run = repo(tmp)
+        wt = Path(tmp) / 'wt'
+        run(main, 'worktree', 'add', '-q', str(wt), '-b', 'feat')
+        run(main, 'mv', 'a.txt', 'one.txt')
+        run(wt, 'mv', 'a.txt', 'two.txt')
+        rows = [{'cwd': str(c), 'agent': 'claude', 'warnings': [],
+                 **d.git_info(c)} for c in (main, wt)]
+        got = d.flag_shared_files(rows)
+        assert [[h for h, _ in r['warnings']] for r in got] == \
+            [['same file'], ['same file']], got
+
+        # diff.relative would make a subfolder session report subfolder-relative
+        # paths, and drop changes outside it
+        (wt / 'sub' / 's.txt').write_text('y\n')
+        run(wt, 'config', 'diff.relative', 'true')
+        assert d.changed_files(wt / 'sub') == d.changed_files(wt)
+        assert 'a.txt' in d.changed_files(wt / 'sub')
+
+    # a clone made on a feature branch has origin/main and no local main
+    with tempfile.TemporaryDirectory() as tmp:
+        main, run = repo(tmp)
+        run(main, 'update-ref', 'refs/remotes/origin/main', 'HEAD')
+        run(main, 'symbolic-ref', 'refs/remotes/origin/HEAD',
+            'refs/remotes/origin/main')
+        run(main, 'checkout', '-q', '-b', 'feat')
+        run(main, 'branch', '-q', '-D', 'main')
+        (main / 'a.txt').write_text('changed\n')
+        assert d.changed_files(main) == {'a.txt'}, d.changed_files(main)
+
+
 def test_render_survives_a_broken_collect(monkey=None):
     """The page must say what went wrong rather than showing nothing."""
     page = d.render([], error='BoomError: git vanished')

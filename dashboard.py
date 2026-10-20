@@ -1198,14 +1198,23 @@ def changed_files(cwd):
     separately. Without -z git escapes non-ASCII names to plain ASCII, the
     same way in every worktree. -z would hand back raw UTF-8 bytes that git()
     cannot decode under this machine's codepage."""
-    head = git(cwd, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD')
-    trunk = head.rsplit('/', 1)[-1] if head else 'main'
+    # The full ref, not just its last part as the session-start hook shows
+    # it: the hook only displays the name, but merge-base needs a ref that
+    # exists, and a clone made on a feature branch has origin/main and no
+    # local main.
+    trunk = git(cwd, 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD') \
+        or 'main'
     base = git(cwd, 'merge-base', 'HEAD', trunk)
     if not base:
         return set()
-    # ls-files alone lists only beneath the folder it runs in, relative to
-    # it; ':/' and --full-name make it repo-wide and repo-relative, as diff is
-    out = (git(cwd, 'diff', '--name-only', base) or '') + '\n' + \
+    # --no-renames: a moved file must report its source too, or two worktrees
+    # moving one file to different names share no path. --no-relative: a
+    # diff.relative config would otherwise cut a subfolder session's paths
+    # short and hide everything outside it. ls-files alone lists only beneath
+    # the folder it runs in, relative to it; ':/' and --full-name make it
+    # repo-wide and repo-relative, as diff is.
+    out = (git(cwd, 'diff', '--name-only', '--no-renames',
+               '--no-relative', base) or '') + '\n' + \
           (git(cwd, 'ls-files', '--others', '--exclude-standard',
                '--full-name', ':/') or '')
     return {p for p in out.splitlines() if p}
