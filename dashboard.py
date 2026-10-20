@@ -447,6 +447,32 @@ def tail_entries(path, nbytes=TAIL_BYTES):
 HANDBACK_TOOLS = ('AskUserQuestion', 'ExitPlanMode')
 
 
+# A key pasted into a command would otherwise be painted on a card that may be
+# on a shared screen. Narrower than a blanket "long string" rule on purpose:
+# that blanks branch names, paths and commit ids, which cards are full of.
+_SECRET = re.compile(
+    r'\b(?:(?:sk|pk)[-_][A-Za-z0-9_-]{8,}|gh[po]_[A-Za-z0-9]{8,}'
+    r'|xox[abprs]-[A-Za-z0-9-]{8,}|AKIA[0-9A-Z]{16}'
+    r'|eyJ[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]+)*)')
+# A run touching `/`, `\` or `.` is part of a path, branch or file name.
+_LONG_RUN = re.compile(
+    r'(?<![A-Za-z0-9+_=/\\.-])[A-Za-z0-9+_=-]{32,}(?![A-Za-z0-9+_=/\\.-])')
+
+
+def redact(text):
+    """Replace key-like strings with [redacted]. Call it before any trimming:
+    a key cut in half by a character limit no longer looks like a key."""
+    def long_run(m):
+        s = m.group(0)
+        # hex commit ids are lower-case, so they survive; a real key mixes
+        # all three
+        if any(c.isupper() for c in s) and any(c.islower() for c in s) \
+                and any(c.isdigit() for c in s):
+            return '[redacted]'
+        return s
+    return _LONG_RUN.sub(long_run, _SECRET.sub('[redacted]', text))
+
+
 def summarise_tool(name, inp):
     def base(key):
         return os.path.basename(str(inp.get(key, ''))) or '?'
@@ -455,7 +481,7 @@ def summarise_tool(name, inp):
     if name == 'Read':
         return f'reading {base("file_path")}'
     if name in ('Bash', 'PowerShell'):
-        return 'running: ' + ' '.join(str(inp.get('command', '')).split())[:70]
+        return 'running: ' + redact(' '.join(str(inp.get('command', '')).split()))[:70]
     if name in ('Grep', 'Glob'):
         return f'searching for {str(inp.get("pattern", ""))[:40]}'
     if name == 'Agent':
@@ -479,7 +505,7 @@ def short_tool(name, inp):
     if name in ('Bash', 'PowerShell'):
         # `cd <dir> &&` and `VAR=x &&` are plumbing, and a command often
         # opens with both; the real command is whatever survives them
-        cmd = str(inp.get('command', ''))
+        cmd = redact(str(inp.get('command', '')))
         while True:
             stripped = re.sub(
                 r'^\s*(?:cd\s+|\w+=)("[^"]*"|\'[^\']*\'|\S+)\s*&&\s*', '', cmd)
@@ -608,7 +634,9 @@ def _fetch_summary(key, asked, said, trail):
     except Exception:
         line = ''  # a model that is missing or down must not break the page
     global _DOWN_UNTIL
-    answer = clean_summary(line)
+    # the prompt above stays raw (it never leaves the machine), but this line
+    # is painted on the card
+    answer = redact(clean_summary(line))
     with _SUMMARY_LOCK:
         _ASKED.discard(key)
         if not answer:
@@ -949,7 +977,7 @@ def codex_call_label(payload, limit=26):
             cmd = ''
         if isinstance(cmd, list):
             cmd = ' '.join(map(str, cmd))
-        cmd = ' '.join(str(cmd).split())
+        cmd = redact(' '.join(str(cmd).split()))
         return ('run ' + cmd)[:limit] if cmd else 'run'
     if name == 'exec':
         # The computer-use tool wraps the real call in a JS snippet -
@@ -972,7 +1000,7 @@ def codex_call_label(payload, limit=26):
             cmd = json.loads('"' + m.group(1) + '"') if m else ''
         except (json.JSONDecodeError, TypeError):
             cmd = ''
-        cmd = ' '.join(cmd.split())
+        cmd = redact(' '.join(cmd.split()))
         return ('run ' + cmd)[:limit] if cmd else 'run'
     return name[:limit]
 

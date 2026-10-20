@@ -1750,6 +1750,39 @@ def test_the_edit_guard_ignores_the_apps_helper_copy():
     assert with_neighbour[0] == 2, 'a real neighbour must still block'
 
 
+def test_key_like_strings_are_hidden_on_cards():
+    """A key typed into a command must not reach the screen, but the long
+    names cards are full of - branches, paths, commit ids - must."""
+    key = 'sk-ant-api03-' + 'Ab1' * 12
+    run = 'Ab1' * 12                       # 36 chars, upper+lower+digit
+    shown = d.summarise_tool('Bash', {'command': f'curl -H "x-api-key: {key}" https://x'})
+    assert key[:20] not in shown and '[redacted]' in shown, shown
+    # trimmed to 70 after redaction, so a key past the cut is still caught
+    # 45 chars of prefix leave 25 of the run on screen: under 32, so only
+    # redacting BEFORE the cut hides it
+    shown = d.summarise_tool('Bash', {'command': 'echo ' + 'word ' * 8 + run})
+    assert 'Ab1Ab1' not in shown, shown
+    assert 'Ab1Ab1' not in d.short_tool('Bash', {'command': f'login {run}'})
+    codex = {'type': 'function_call', 'name': 'shell_command',
+             'arguments': json.dumps({'command': f'curl -u {key}'})}
+    assert 'Ab1Ab1' not in d.codex_call_label(codex, limit=80)
+    for word in ('ghp_' + 'a1B2' * 5, 'xoxb-' + '12345678ab', 'AKIA' + 'ABCDEFGH12345678',
+                 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc'):
+        assert d.redact(f'x {word} y') == 'x [redacted] y', word
+
+    # known look-alikes survive untouched
+    for safe in ('claude/airspace-dashboard-review-d8c166',
+                 'bc38e0d5414d865bc72935aef9d379816bdc2fc3',
+                 r'C:\Users\david\repos\Multi Agent Dashboard\.claude\worktrees'
+                 r'\airspace-dashboard-review-d8c166\docs\superpowers\specs'
+                 r'\2026-10-19-ideas-from-aos-design.md',
+                 # mixed case and digits, but a path segment: must survive
+                 r'C:\Users\Dev\MyVeryLongProjectName2026Edition\src',
+                 'pip install sk-learn', 'skeleton-directory-name-that-is-long',
+                 'test_key_like_strings_are_hidden_on_cards_and_more'):
+        assert d.redact(safe) == safe, safe
+
+
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_')]
     for t in tests:
