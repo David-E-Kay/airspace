@@ -22,6 +22,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import urllib.request
 import webbrowser
 import xml.etree.ElementTree as ET
@@ -1774,9 +1775,31 @@ def close_with_the_window():
             os._exit(0)
 
 
+def local_request(headers):
+    """Does this request name this machine?
+
+    A web page elsewhere can point a made-up hostname at 127.0.0.1 (DNS
+    rebinding) and read the board through the browser. The browser still sends
+    the made-up name in Host, so anything but loopback is refused. Origin, when
+    sent, is held to the same rule; 'null' has no hostname and fails.
+    """
+    ours = ('127.0.0.1', 'localhost')
+    try:
+        host = headers.get('Host')
+        if not host or urllib.parse.urlsplit('//' + host).hostname not in ours:
+            return False
+        origin = headers.get('Origin')
+        return origin is None or urllib.parse.urlsplit(origin).hostname in ours
+    except ValueError:  # a Host like "[" is not a name of ours
+        return False
+
+
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         global _LAST_SEEN
+        if not local_request(self.headers):
+            self.send_error(403)  # before the heartbeat: a refused request must not keep the board alive
+            return
         _LAST_SEEN = time.time()
         if self.path not in ('/', '/index.html'):
             self.send_error(404)

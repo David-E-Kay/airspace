@@ -3,12 +3,14 @@
 
 Run: python tests/test_dashboard.py
 """
+import http.client
 import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1869,6 +1871,40 @@ def test_an_error_stop_shows_in_the_strip_and_on_its_card():
     assert 'stopped: signed out' in page
     assert '.state.error {' in page and '.card.error {' in page, 'no colour for error'
     assert d.PULSE_STATES == ('asking', 'error', 'done')
+
+
+def test_the_page_server_refuses_requests_that_name_another_host():
+    """A web page elsewhere can point a made-up name at 127.0.0.1 and read the
+    board through it. The Host header is what gives that away."""
+    real = d.build_page, d._LAST_SEEN
+    d.build_page = lambda: '<html>ok</html>'
+    srv = d.ThreadingHTTPServer(('127.0.0.1', 0), d.Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    port = srv.server_address[1]
+
+    def get(headers):
+        c = http.client.HTTPConnection('127.0.0.1', port, timeout=5)
+        c.putrequest('GET', '/', skip_host=True)
+        for k, v in headers.items():
+            c.putheader(k, v)
+        c.endheaders()
+        status = c.getresponse().status
+        c.close()
+        return status
+    try:
+        assert get({'Host': f'127.0.0.1:{port}'}) == 200
+        assert get({'Host': f'localhost:{port}'}) == 200
+        assert get({'Host': f'127.0.0.1:{port}', 'Origin': f'http://127.0.0.1:{port}'}) == 200
+        d._LAST_SEEN = 0.0
+        assert get({'Host': f'evil.example:{port}'}) == 403
+        assert get({}) == 403
+        assert get({'Host': f'127.0.0.1:{port}', 'Origin': 'http://evil.example'}) == 403
+        assert get({'Host': f'127.0.0.1:{port}', 'Origin': 'null'}) == 403
+        assert d._LAST_SEEN == 0.0, 'a refused request kept the board alive'
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        d.build_page, d._LAST_SEEN = real
 
 
 if __name__ == '__main__':
