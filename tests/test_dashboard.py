@@ -1821,6 +1821,56 @@ def test_summary_line_is_redacted_before_it_is_trimmed():
         d._DOWN_UNTIL = 0.0
 
 
+def test_a_turn_that_stopped_on_an_api_error_reads_as_error():
+    """Hitting the usage limit is not finishing the turn."""
+    def at(sec):
+        return f'2026-09-20T20:57:{sec:02d}Z'
+    def err(code, resets=None):
+        e = {'type': 'assistant', 'timestamp': at(30), 'isApiErrorMessage': True,
+             'error': code, 'apiErrorStatus': 429,
+             'message': {'model': '<synthetic>',
+                         'content': [{'type': 'text', 'text': "You've hit your limit"}]}}
+        if resets:
+            e['quotaLimits'] = {'resetsAt': resets}
+        return e
+    before = [
+        {'type': 'user', 'timestamp': at(0),
+         'message': {'content': [{'type': 'text', 'text': 'go'}]}},
+        {'type': 'assistant', 'timestamp': at(10),
+         'message': {'model': 'claude-opus-5-5',
+                     'content': [{'type': 'text', 'text': 'on it'}]}},
+    ]
+    got = d.read_activity(before + [err('rate_limit', 1789938000)])
+    hhmm = datetime.fromtimestamp(1789938000).strftime('%H:%M')
+    assert got['state'] == 'error', got['state']
+    assert got['detail'] == f'stopped: usage limit · resets {hhmm}', got['detail']
+    # the error record is written by the app, not a model
+    assert got['model'] == 'claude-opus-5-5', got['model']
+
+    assert d.read_activity(before + [err('rate_limit')])['detail'] == 'stopped: usage limit'
+    assert d.read_activity(before + [err('authentication_failed')])['detail'] == 'stopped: signed out'
+    assert d.read_activity(before + [err('overloaded')])['detail'] == 'stopped: error (overloaded)'
+
+    # prompted again: the new turn settles the state, the error is history
+    again = before + [err('rate_limit'),
+                      {'type': 'user', 'timestamp': at(50),
+                       'message': {'content': [{'type': 'text', 'text': 'retry'}]}}]
+    assert d.read_activity(again)['state'] == 'thinking'
+
+
+def test_an_error_stop_shows_in_the_strip_and_on_its_card():
+    row = {'agent': 'claude', 'state': 'error', 'title': 'Limit hit',
+           'folder': 'X', 'is_main': True, 'branch': 'main', 'dirty': 0,
+           'warnings': [], 'pulse': True, 'detail': 'stopped: signed out',
+           'says': '', 'summary': '', 'trail': [], 'since': None, 'last_ts': None}
+    page = d.render([('X', [row])])
+    assert 'class="card error a-claude pulse"' in page, page
+    assert '<span class="w error">stopped on an error</span>' in page, 'not in the strip'
+    assert 'stopped: signed out' in page
+    assert '.state.error {' in page and '.card.error {' in page, 'no colour for error'
+    assert d.PULSE_STATES == ('asking', 'error', 'done')
+
+
 if __name__ == '__main__':
     tests = [v for k, v in sorted(globals().items()) if k.startswith('test_')]
     for t in tests:

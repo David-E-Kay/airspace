@@ -156,8 +156,12 @@ the agent and the window to go and find it in.
 | done — your turn | finished its turn and stopped |
 | no recent activity | nothing in the transcript to go on |
 
-A card glows for 25 seconds on entering "needs your answer" or "done";
-replying puts the session back to work and the glow stops.
+A turn that the API cut short — the usage limit, a signed-out session — reads
+as *stopped on an error*, not done, and the card says which cause (and, for the
+usage limit, when it resets). Prompting the session again clears it.
+
+A card glows for 25 seconds on entering "needs your answer", "stopped on an
+error" or "done"; replying puts the session back to work and the glow stops.
 
 **Along the top of a card**: the branch, how many files are uncommitted, and
 how long the session has been open. Uncommitted files plus nothing saved to

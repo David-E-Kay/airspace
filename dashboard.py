@@ -102,15 +102,17 @@ REFRESH_SECONDS = 10
 # wants you glows: answering a question moves the session back to work, and
 # that is the glow going away, not another one starting.
 PULSE_SECONDS = 25
-PULSE_STATES = ('asking', 'done')
+PULSE_STATES = ('asking', 'error', 'done')
 
-# Both of these mean the session has stopped and nothing moves until you act,
-# which is why they share the strip at the top of the page. They are not the
-# same thing, though: `asking` is a turn held open mid-task waiting for an
-# answer, `done` is a turn that finished. Listed in this order, most blocked
-# first, and each one says which it is - the strip used to call both of them
-# "waiting on you", which read as a question that was never asked.
+# All three of these mean the session has stopped and nothing moves until you
+# act, which is why they share the strip at the top of the page. They are not
+# the same thing, though: `asking` is a turn held open mid-task waiting for an
+# answer, `error` is a turn the API cut short, `done` is a turn that finished.
+# Listed in this order, most blocked first, and each one says which it is - the
+# strip used to call `asking` and `done` alike "waiting on you", which read as
+# a question that was never asked.
 STATE_WORDS = {'working': 'working', 'asking': 'needs your answer',
+               'error': 'stopped on an error',
                'done': 'done — your turn', 'thinking': 'thinking',
                'idle': 'no recent activity'}
 
@@ -751,6 +753,29 @@ def cache_window(convo):
     return 60
 
 
+def error_label(entry):
+    """Why the API cut the turn short, in the few words a card has room for.
+
+    The cause is what tells you what to do: a usage limit passes with the
+    clock, a signed-out session needs you at a keyboard, anything else is
+    worth seeing the raw code for. The reset time is written as epoch seconds
+    and shown in local time, which is the clock you are reading it against.
+    """
+    code = entry.get('error')
+    if code == 'rate_limit':
+        label = 'stopped: usage limit'
+        try:
+            resets = (entry.get('quotaLimits') or {}).get('resetsAt')
+            if resets:
+                label += ' · resets ' + datetime.fromtimestamp(resets).strftime('%H:%M')
+        except (TypeError, ValueError, OverflowError, OSError):
+            pass
+        return label
+    if code == 'authentication_failed':
+        return 'stopped: signed out'
+    return f'stopped: error ({code})'
+
+
 def read_activity(entries):
     """What the session is doing, plus the trail of tools it has been hitting.
 
@@ -760,6 +785,13 @@ def read_activity(entries):
     and the model has not answered yet. The exception is a tool whose whole
     job is to hand control back - asking a question, or putting a plan up for
     approval - which is `asking`.
+
+    A turn that ends on text is not always a finished one. When the API itself
+    cut it short - the usage limit, a signed-out session - the app writes an
+    error message into the transcript where the reply should be, so the shape
+    alone reads as `done`. That is the one state that wrongly says all is well,
+    so it is `error`, carrying the cause. Prompting again starts a new turn and
+    the error is history.
 
     `asking` and `done` used to share one label, "waiting for you", which
     made a session that had simply stopped talking look as urgent as one
@@ -797,6 +829,8 @@ def read_activity(entries):
             name = bs[-1].get('name', '')
             state = 'asking' if name in HANDBACK_TOOLS else 'working'
             detail = summarise_tool(name, bs[-1].get('input') or {})
+        elif last['type'] == 'assistant' and last.get('isApiErrorMessage'):
+            state, detail = 'error', error_label(last)
         elif last['type'] == 'assistant':
             state = 'done'
             # Nothing is running, so there is no action to name. The last
@@ -810,10 +844,12 @@ def read_activity(entries):
                       if any(b.get('type') == 'tool_result' for b in bs)
                       else 'instruction received')
 
+    # The app writes error messages itself, under a placeholder model name.
     model = next((e['message'].get('model') for e in reversed(convo)
                   if e['type'] == 'assistant'
                   and isinstance(e.get('message'), dict)
-                  and e['message'].get('model')), '')
+                  and e['message'].get('model')
+                  and e['message']['model'] != '<synthetic>'), '')
 
     return {'state': state, 'detail': detail, 'since': since,
             'trail': trail[-6:], 'last_ts': last_ts, 'model': model,
@@ -1432,6 +1468,7 @@ h2 { font-size:13px; font-weight:600; margin:18px 0 7px; color:#cfd4dc; }
 .card.a-codex { border-right-color:#2f7f79; }
 .card.working { border-left-color:#3d8bfd; }
 .card.asking { border-left-color:#e3b341; }
+.card.error { border-left-color:#d9822b; }
 .card.done { border-left-color:#3fb950; }
 .card.thinking { border-left-color:#8957e5; }
 .card.clash { border-left-color:#e5534b; }
@@ -1473,6 +1510,7 @@ h2 { font-size:13px; font-weight:600; margin:18px 0 7px; color:#cfd4dc; }
 .triage .w { flex:0 0 auto; width:130px; font-size:10px; font-weight:700;
              letter-spacing:.06em; text-transform:uppercase; }
 .triage .w.asking { color:#f0c674; }
+.triage .w.error { color:#f0a35e; }
 .triage .w.done { color:#6fcf7f; }
 .triage .where { margin-left:auto; padding-left:10px; font-size:10px;
                  letter-spacing:.06em; text-transform:uppercase;
@@ -1497,6 +1535,7 @@ h2 { font-size:13px; font-weight:600; margin:18px 0 7px; color:#cfd4dc; }
          text-transform:uppercase; }
 .state.working { color:#79b8ff; }
 .state.asking { color:#f0c674; }
+.state.error { color:#f0a35e; }
 .state.done { color:#6fcf7f; }
 .state.thinking { color:#c39bff; }
 .state.idle { color:#8b93a1; }
