@@ -20,6 +20,7 @@ import re
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.parse
@@ -1341,12 +1342,80 @@ def worked_since_opening(started, last_ts):
     return wrote > opened
 
 
+# Where the Codex plugin for Claude keeps its job log: one state.json per
+# project folder, under each install's plugin data folder, or under Temp when
+# the plugin runs without one.
+CODEX_JOB_ROOTS = (CLAUDE / 'plugins' / 'data',
+                   Path(tempfile.gettempdir()) / 'codex-companion')
+
+
+def job_alive(job):
+    """Whether the process a Codex job names is still the one doing it.
+
+    A crash leaves the job saying `running` for good, and Windows reuses the
+    dead PID straight away. The plugin rewrites the job after its process has
+    started, so a process that started later than that write is somebody else.
+    """
+    pid = job.get('pid')
+    if not isinstance(pid, int):
+        return False
+    if sys.platform != 'win32':
+        try:
+            os.kill(pid, 0)
+            return True
+        except (OSError, ProcessLookupError):
+            return False
+    started, written = proc_start(pid), moment(job.get('updatedAt'))
+    if started is None or written is None:
+        return False
+    # FILETIME counts 100ns ticks from 1601. Two seconds of slack for clocks
+    # that round differently.
+    return started / 1e7 - 11644473600 <= written.timestamp() + 2
+
+
+def codex_jobs(roots=CODEX_JOB_ROOTS, alive=job_alive):
+    """Claude session id to the Codex job it has running in the background.
+
+    Run in the background, a Codex review ends Claude's turn, so the
+    transcript reads `done` while the review is still going. Run in the
+    foreground it is an open tool call and needs none of this.
+    """
+    out = {}
+    for root in roots:
+        # <plugin>/state/<project>/ under plugin data, <project>/ under Temp
+        files = [*Path(root).glob('*/state/*/state.json'),
+                 *Path(root).glob('*/state.json')]
+        for f in files:
+            try:
+                jobs = json.loads(f.read_text(encoding='utf-8')).get('jobs') or []
+            except (OSError, ValueError, AttributeError):
+                continue
+            for job in jobs:
+                if (isinstance(job, dict) and job.get('sessionId')
+                        and job.get('status') in ('queued', 'running')
+                        and alive(job)):
+                    kind = job.get('kindLabel') or job.get('jobClass') or 'job'
+                    out[job['sessionId']] = {
+                        'detail': f'Codex {kind} running',
+                        'since': job.get('startedAt') or job.get('updatedAt')}
+    return out
+
+
+def with_codex_job(activity, job):
+    """Show a session waiting on Codex as working, not as your turn."""
+    if job and activity['state'] in ('done', 'idle', 'thinking'):
+        activity.update(state='working', detail=job['detail'],
+                        since=job['since'] or activity['since'], codex_job=True)
+    return activity
+
+
 def claude_rows():
     rows = []
+    jobs = codex_jobs()
     for s in live_sessions():
         tpath = transcript_path(s['cwd'], s['sessionId'])
         entries = tail_entries(tpath)
-        activity = read_activity(entries)
+        activity = with_codex_job(read_activity(entries), jobs.get(s['sessionId']))
         started = iso_from_ms(s.get('startedAt'))
         if not worked_since_opening(started, activity['last_ts']):
             continue
@@ -1767,6 +1836,7 @@ def render(groups, error=''):
             quiet = minutes_since(r.get('last_ts'))
             hush = (f'<span class="quiet"> &middot; silent {span(r["last_ts"])}</span>'
                     if r['state'] in ('working', 'thinking')
+                    and not r.get('codex_job')  # Codex writes to its own log
                     and quiet is not None and quiet >= QUIET_MINUTES else '')
             parts.append(f'<div class="state {r["state"]}">{words[r["state"]]}'
                          f'<span class="dur"> &middot; {e(ago(r["since"]))}</span>'

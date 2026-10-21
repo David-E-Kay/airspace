@@ -918,6 +918,53 @@ def test_the_board_asks_again_once_ollama_comes_back():
         d._DOWN_UNTIL = 0.0
 
 
+def test_background_codex_job_keeps_the_claude_card_working():
+    """A review run in the background ends Claude's turn, so the transcript
+    reads `done` while Codex is still at it. The Codex plugin's own job log
+    says which session started it and which process is doing the work."""
+    now = datetime.now(timezone.utc)
+    iso = lambda t: t.isoformat().replace('+00:00', 'Z')
+    dead_pid = 4_000_000  # far above any PID Windows hands out
+    jobs = [
+        {'id': 'live', 'status': 'running', 'jobClass': 'review', 'kindLabel': 'review',
+         'sessionId': 'S1', 'pid': os.getpid(),
+         'startedAt': iso(now), 'updatedAt': iso(now)},
+        {'id': 'queued', 'status': 'queued', 'jobClass': 'task', 'kindLabel': 'rescue',
+         'sessionId': 'S2', 'pid': os.getpid(), 'updatedAt': iso(now)},
+        # The machine crashed mid-review: the log still says running.
+        {'id': 'crashed', 'status': 'running', 'jobClass': 'review', 'kindLabel': 'review',
+         'sessionId': 'S3', 'pid': dead_pid, 'updatedAt': iso(now)},
+        # The PID was handed to a newer process after the job's one died.
+        {'id': 'recycled', 'status': 'running', 'jobClass': 'review', 'kindLabel': 'review',
+         'sessionId': 'S4', 'pid': os.getpid(),
+         'updatedAt': iso(now - timedelta(days=30))},
+        {'id': 'old', 'status': 'completed', 'jobClass': 'review', 'kindLabel': 'review',
+         # A live PID, so only the status can rule it out.
+         'sessionId': 'S5', 'pid': os.getpid(), 'updatedAt': iso(now)},
+    ]
+    with tempfile.TemporaryDirectory() as tmp:
+        state = Path(tmp) / 'codex-openai-codex' / 'state' / 'repo-abc'
+        state.mkdir(parents=True)
+        (state / 'state.json').write_text(json.dumps({'jobs': jobs}), encoding='utf-8')
+        (Path(tmp) / 'other' / 'state' / 'junk').mkdir(parents=True)
+        (Path(tmp) / 'other' / 'state' / 'junk' / 'state.json').write_text('{oops', encoding='utf-8')
+
+        got = d.codex_jobs(roots=[tmp])
+        assert set(got) == {'S1', 'S2'}, got
+        assert got['S1']['detail'] == 'Codex review running', got
+        assert got['S2']['detail'] == 'Codex rescue running', got
+        assert got['S1']['since'] == iso(now), got
+
+    done = {'state': 'done', 'detail': '', 'since': 'x', 'last_ts': 'x'}
+    over = d.with_codex_job(dict(done), got['S1'])
+    assert over['state'] == 'working' and over['detail'] == 'Codex review running', over
+    assert over['codex_job'], 'a long review would read as a stuck session'
+    # A question for you outranks Codex working in the background.
+    asking = {'state': 'asking', 'detail': 'Which one?', 'since': 'x'}
+    assert d.with_codex_job(dict(asking), got['S1'])['state'] == 'asking'
+    assert d.with_codex_job(dict(done), None) == done
+
+
 def test_codex_liveness_is_a_held_lock_not_a_guess():
     """Codex writes no process id, but each open thread keeps its lock file
     open - and Windows releases the handle when the process dies."""
