@@ -736,6 +736,11 @@ def handback_ask(convo):
     return ''
 
 
+# The first line of a handoff reply, which session-handoff's handoff-save.py
+# saves the reply by. Kept in step with its handoff-buttons mod.
+HANDOFF_MARKER = re.compile(r'\s*<!--\s*handoff-memory-dir:')
+
+
 def cache_window(convo):
     """Minutes the session's prompt cache lasts: 60, or 5.
 
@@ -856,6 +861,12 @@ def read_activity(entries):
     return {'state': state, 'detail': detail, 'since': since,
             'trail': trail[-6:], 'last_ts': last_ts, 'model': model,
             'cache_ttl': cache_window(convo),
+            # Any handoff counts, as for session-handoff's own cache alarm:
+            # a follow-up question after it leaves nothing worth going back for.
+            'handoff': any(HANDOFF_MARKER.match(b.get('text', ''))
+                           for e in convo
+                           if e['type'] == 'assistant' and not e.get('isSidechain')
+                           for b in blocks_of(e) if b.get('type') == 'text'),
             'says': headline(says, 160),
             # The card shows `says`, one trimmed line. The model gets the
             # whole reply and the request - it is reading, not displaying.
@@ -1559,6 +1570,8 @@ def cache_light(r):
     left = r.get('cache_ttl', 60) - mins
     colour = 'red' if left < 10 else 'yellow' if left <= 20 else 'green'
     words = f'{left} mins remaining' if left > 0 else 'expired'
+    if r.get('handoff'):
+        words += ' (Handoff saved)'
     return (f'<span class="cache">Cache state '
             f'<span class="cache-light {colour}"></span> -- {words}</span>')
 
