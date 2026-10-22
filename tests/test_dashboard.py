@@ -1675,6 +1675,35 @@ def test_the_cache_window_comes_from_the_last_reply():
     assert 'cache-light red' in d.cache_light(r), d.cache_light(r)
 
 
+def test_the_cache_line_says_when_a_handoff_is_already_saved():
+    """An expiring cache needs no visit once the session has handed off. The
+    handoff reply opens with the marker session-handoff saves it by - the same
+    test that silences its own cache alarm - and a follow-up question after it
+    does not undo it."""
+    def reply(text, side=False):
+        return {'type': 'assistant', 'timestamp': '2026-10-17T10:00:00Z',
+                'isSidechain': side,
+                'message': {'content': [{'type': 'text', 'text': text}]}}
+    def ask(text):
+        return {'type': 'user', 'timestamp': '2026-10-17T10:01:00Z',
+                'message': {'content': [{'type': 'text', 'text': text}]}}
+    handoff = reply('<!-- handoff-memory-dir: C:/m -->\n# Session handoff')
+    read = lambda *es: d.read_activity(list(es))['handoff']
+    assert read(handoff)
+    assert read(handoff, ask('one more thing?'), reply('sure'))
+    assert not read(reply('done'))
+    # a subagent's reply is not the session's handoff
+    assert not read(reply('<!-- handoff-memory-dir: x -->', side=True))
+    # mentioning the marker mid-reply is not writing one
+    assert not read(reply('the reply starts <!-- handoff-memory-dir: x -->'))
+
+    since = datetime.now(timezone.utc).isoformat()
+    r = {'agent': 'claude', 'since': since, 'cache_ttl': 60}
+    assert '(Handoff saved)' not in d.cache_light(r), d.cache_light(r)
+    r['handoff'] = True
+    assert d.cache_light(r).endswith(' (Handoff saved)</span>'), d.cache_light(r)
+
+
 def test_old_uncommitted_work_is_called_out_but_fresh_work_is_not():
     def card(dirty, commit_minutes):
         when = datetime.now(timezone.utc) - timedelta(minutes=commit_minutes)
