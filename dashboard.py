@@ -1395,17 +1395,68 @@ def codex_jobs(roots=CODEX_JOB_ROOTS, alive=job_alive):
                         and job.get('status') in ('queued', 'running')
                         and alive(job)):
                     kind = job.get('kindLabel') or job.get('jobClass') or 'job'
-                    out[job['sessionId']] = {
-                        'detail': f'Codex {kind} running',
-                        'since': job.get('startedAt') or job.get('updatedAt')}
+                    out[job['sessionId']] = f'Codex {kind}'
     return out
 
 
-def with_codex_job(activity, job):
-    """Show a session waiting on Codex as working, not as your turn."""
-    if job and activity['state'] in ('done', 'idle', 'thinking'):
-        activity.update(state='working', detail=job['detail'],
-                        since=job['since'] or activity['since'], codex_job=True)
+# The app's note that a background task has ended. A Monitor event names its
+# task too, but carries no status, and the task goes on running.
+TASK_ENDED = re.compile(r'<task-id>([^<]+)</task-id>(?:(?!</task-notification>).)*?<status>',
+                        re.S)
+
+
+def background_tasks(entries):
+    """Background tasks the session started that have not reported back.
+
+    Starting one hands back at once, with the task's id in the result, and
+    the app adds a note carrying that id when the task ends. A task started
+    before the tail the board reads is missed, which leaves the card as it
+    would be without this.
+    """
+    calls = {b.get('id'): b.get('input') or {} for e in entries
+             if e.get('type') == 'assistant'
+             for b in blocks_of(e) if b.get('type') == 'tool_use'}
+    running = {}
+    for e in entries:
+        res = e.get('toolUseResult')
+        if e.get('type') != 'user' or not isinstance(res, dict):
+            continue
+        tid = res.get('backgroundTaskId') or (
+            res.get('agentId') if res.get('status') == 'async_launched' else None)
+        if tid:
+            use = next((b.get('tool_use_id') for b in blocks_of(e)
+                        if b.get('type') == 'tool_result'), None)
+            inp = calls.get(use, {})
+            command = str(inp.get('command') or '')
+            running[tid] = {'label': inp.get('description') or command[:40] or 'task',
+                            'command': command}
+    for e in entries:
+        # Delivered as a message, or still queued behind the running turn.
+        text = (e.get('content') if e.get('type') == 'queue-operation'
+                else json.dumps((e.get('message') or {}).get('content'))
+                if e.get('type') == 'user' else None)
+        for tid in TASK_ENDED.findall(text or ''):
+            running.pop(tid, None)
+    # A task stopped by hand ends with no note at all.
+    for e in entries:
+        for b in blocks_of(e):
+            if b.get('type') == 'tool_use' and b.get('name') == 'TaskStop':
+                running.pop((b.get('input') or {}).get('task_id'), None)
+    return list(running.values())
+
+
+def with_background(activity, tasks, codex_job):
+    """Note what the session has running in the background.
+
+    The state is left alone: a turn can end, or stop on a question, while a
+    task runs, and it is still your turn. A background Codex review is a
+    background command of the plugin's, so it is counted once, by its Codex
+    name.
+    """
+    if codex_job:
+        tasks = [t for t in tasks if 'codex-companion' not in t['command']] \
+            + [{'label': codex_job}]
+    activity['background'] = [t['label'] for t in tasks]
     return activity
 
 
@@ -1415,7 +1466,8 @@ def claude_rows():
     for s in live_sessions():
         tpath = transcript_path(s['cwd'], s['sessionId'])
         entries = tail_entries(tpath)
-        activity = with_codex_job(read_activity(entries), jobs.get(s['sessionId']))
+        activity = with_background(read_activity(entries), background_tasks(entries),
+                                   jobs.get(s['sessionId']))
         started = iso_from_ms(s.get('startedAt'))
         if not worked_since_opening(started, activity['last_ts']):
             continue
@@ -1680,6 +1732,8 @@ h2 { font-size:13px; font-weight:600; margin:18px 0 7px; color:#cfd4dc; }
 .state.idle { color:#8b93a1; }
 .state .dur { font-weight:400; letter-spacing:0; text-transform:none;
               color:#8b93a1; }
+.state .bg { font-weight:400; letter-spacing:0; text-transform:none;
+             color:#79b8ff; cursor:help; }
 .detail { margin-top:2px; font-family:Consolas,monospace; font-size:12px;
           color:#c9d1d9; white-space:nowrap; overflow:hidden;
           text-overflow:ellipsis; }
@@ -1836,11 +1890,16 @@ def render(groups, error=''):
             quiet = minutes_since(r.get('last_ts'))
             hush = (f'<span class="quiet"> &middot; silent {span(r["last_ts"])}</span>'
                     if r['state'] in ('working', 'thinking')
-                    and not r.get('codex_job')  # Codex writes to its own log
                     and quiet is not None and quiet >= QUIET_MINUTES else '')
+            # Busy already says something is running.
+            bg = r.get('background') or []
+            many = f'{len(bg)} background tasks' if len(bg) > 1 else 'background task'
+            bg_note = (f'<span class="bg" title="{e(", ".join(bg))}"> &middot; '
+                       f'{many} running</span>'
+                       if bg and r['state'] != 'working' else '')
             parts.append(f'<div class="state {r["state"]}">{words[r["state"]]}'
                          f'<span class="dur"> &middot; {e(ago(r["since"]))}</span>'
-                         f'{hush}</div>')
+                         f'{bg_note}{hush}</div>')
             if r['detail']:
                 parts.append(f'<div class="detail">{e(r["detail"])}</div>')
             # Both rows are prose about the turn, so each says which it is.

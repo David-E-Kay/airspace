@@ -918,7 +918,7 @@ def test_the_board_asks_again_once_ollama_comes_back():
         d._DOWN_UNTIL = 0.0
 
 
-def test_background_codex_job_keeps_the_claude_card_working():
+def test_background_codex_job_is_noted_on_the_claude_card():
     """A review run in the background ends Claude's turn, so the transcript
     reads `done` while Codex is still at it. The Codex plugin's own job log
     says which session started it and which process is doing the work."""
@@ -951,18 +951,84 @@ def test_background_codex_job_keeps_the_claude_card_working():
 
         got = d.codex_jobs(roots=[tmp])
         assert set(got) == {'S1', 'S2'}, got
-        assert got['S1']['detail'] == 'Codex review running', got
-        assert got['S2']['detail'] == 'Codex rescue running', got
-        assert got['S1']['since'] == iso(now), got
+        assert got == {'S1': 'Codex review', 'S2': 'Codex rescue'}, got
 
+    # The turn can be over while Codex works: the state stays what it is.
     done = {'state': 'done', 'detail': '', 'since': 'x', 'last_ts': 'x'}
-    over = d.with_codex_job(dict(done), got['S1'])
-    assert over['state'] == 'working' and over['detail'] == 'Codex review running', over
-    assert over['codex_job'], 'a long review would read as a stuck session'
-    # A question for you outranks Codex working in the background.
-    asking = {'state': 'asking', 'detail': 'Which one?', 'since': 'x'}
-    assert d.with_codex_job(dict(asking), got['S1'])['state'] == 'asking'
-    assert d.with_codex_job(dict(done), None) == done
+    over = d.with_background(dict(done), [], got['S1'])
+    assert over['state'] == 'done' and over['background'] == ['Codex review'], over
+    # The plugin runs that review as a background command of its own, so the
+    # transcript holds it too. It is one task, told by its Codex name.
+    launch = [{'label': 'Codex review', 'command': 'node codex-companion.mjs review'}]
+    assert d.with_background(dict(done), launch, got['S1'])['background'] == ['Codex review']
+    assert d.with_background(dict(done), [], None)['background'] == []
+
+
+def bg_launch(use_id, task_id, tool, inp, agent=False):
+    """A background task starting, as the transcript records it: the call,
+    then a result that hands back at once carrying the task's id."""
+    result = ({'isAsync': True, 'status': 'async_launched', 'agentId': task_id}
+              if agent else {'stdout': '', 'backgroundTaskId': task_id})
+    return [
+        {'type': 'assistant', 'message': {'content': [
+            {'type': 'tool_use', 'id': use_id, 'name': tool, 'input': inp}]}},
+        {'type': 'user', 'toolUseResult': result, 'message': {'content': [
+            {'type': 'tool_result', 'tool_use_id': use_id, 'content': 'started'}]}},
+    ]
+
+
+def bg_notice(task_id, use_id='', status='completed'):
+    """The message the app adds when a background task reports back."""
+    use = f'<tool-use-id>{use_id}</tool-use-id>\n' if use_id else ''
+    stat = f'<status>{status}</status>\n' if status else ''
+    return {'type': 'user', 'origin': {'kind': 'task-notification'},
+            'message': {'content': f'<task-notification>\n<task-id>{task_id}</task-id>\n'
+                                   f'{use}{stat}<summary>x</summary>\n</task-notification>'}}
+
+
+def test_a_running_background_task_is_noted_not_mistaken_for_work():
+    """Starting a background task hands back at once, so the turn can end
+    while it runs. The turn really is over - it may be your turn, or a
+    question may be waiting - so the state is left alone and the card notes
+    the task. A task is running until the app reports it back."""
+    reply = {'type': 'assistant', 'message': {'content': [{'type': 'text', 'text': 'Started it.'}]}}
+    entries = [
+        *bg_launch('tu1', 'agentA', 'Agent', {'description': 'Review Task 4'}, agent=True),
+        *bg_launch('tu2', 'bashB', 'Bash', {'command': 'pytest -q', 'description': 'Run the tests'}),
+        *bg_launch('tu3', 'bashC', 'Bash', {'command': 'sleep 1'}),
+        *bg_launch('tu4', 'bashD', 'Bash', {'command': 'npm run build'}),
+        # A Monitor event names a task but carries no status: not an ending.
+        bg_notice('bashB', status=''),
+        bg_notice('bashC', 'tu3'),
+        # Still queued behind the turn, not yet delivered, but finished all the same.
+        {'type': 'queue-operation', 'operation': 'enqueue',
+         'content': bg_notice('bashD', 'tu4', 'failed')['message']['content']},
+        reply,
+    ]
+    tasks = d.background_tasks(entries)
+    assert [t['label'] for t in tasks] == ['Review Task 4', 'Run the tests'], tasks
+
+    act = d.with_background(d.read_activity(entries), tasks, None)
+    assert act['state'] == 'done', act
+    assert act['background'] == ['Review Task 4', 'Run the tests'], act
+
+    # Both report back: nothing is running.
+    entries += [bg_notice('agentA', 'tu1'), bg_notice('bashB', 'tu2', 'killed'), reply]
+    assert d.background_tasks(entries) == []
+    # Stopping a task by hand ends it, and the app sends no note for that.
+    stopped = [*bg_launch('tu5', 'bashE', 'Bash', {'command': 'grep -r x'}),
+               {'type': 'assistant', 'message': {'content': [
+                   {'type': 'tool_use', 'id': 'tu6', 'name': 'TaskStop',
+                    'input': {'task_id': 'bashE'}}]}}]
+    assert d.background_tasks(stopped) == []
+    # Reading a task's output names it too, and leaves it running.
+    peeked = [*stopped[:2], {'type': 'assistant', 'message': {'content': [
+        {'type': 'tool_use', 'id': 'tu7', 'name': 'TaskOutput', 'input': {'task_id': 'bashE'}}]}}]
+    assert [t['label'] for t in d.background_tasks(peeked)] == ['grep -r x']
+    # A command run in the foreground is not a background task.
+    plain = [{'type': 'user', 'toolUseResult': {'stdout': 'ok'},
+              'message': {'content': [{'type': 'tool_result', 'tool_use_id': 'x'}]}}]
+    assert d.background_tasks(plain) == []
 
 
 def test_codex_liveness_is_a_held_lock_not_a_guess():
@@ -1436,6 +1502,29 @@ def test_a_busy_session_that_has_gone_quiet_says_so():
     # a finished session is not "quiet", it is done - the label would be noise
     ended = d.render([('app', [card('done', d.QUIET_MINUTES + 5)])])
     assert 'silent' not in ended, ended
+
+
+def test_the_card_notes_background_tasks_beside_the_state():
+    """The state keeps saying whose turn it is. The note says something is
+    still running, and hovering it names what."""
+    def card(state, background):
+        now = datetime.now(timezone.utc).isoformat()
+        return {'agent': 'claude', 'state': state, 'title': 't',
+                'folder': 'f', 'is_main': True, 'branch': 'main', 'dirty': 0,
+                'warnings': [], 'pulse': False, 'detail': '', 'says': '',
+                'trail': [], 'since': now, 'app': '', 'model': '',
+                'started': now, 'committed': None, 'last_ts': now,
+                'background': background}
+
+    one = d.render([('app', [card('done', ['Codex review'])])])
+    assert 'done — your turn' in one and 'background task running' in one, one
+    assert 'title="Codex review"' in one, one
+    two = d.render([('app', [card('asking', ['Review Task 4', 'Run <tests>'])])])
+    assert '2 background tasks running' in two, two
+    assert 'Review Task 4, Run &lt;tests&gt;' in two, 'the names are escaped'
+    # Busy already says something is running.
+    assert 'background task' not in d.render([('app', [card('working', ['x'])])])
+    assert 'background task' not in d.render([('app', [card('done', [])])])
 
 
 def test_waiting_sessions_come_first_and_are_counted_in_the_title():
